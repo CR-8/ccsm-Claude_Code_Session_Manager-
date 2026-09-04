@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Test + tooling
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Never commit anything that could carry a credential
+*.credentials.json
+.credentials.json
+.claude.json
+*.ccsm-backup
+store/

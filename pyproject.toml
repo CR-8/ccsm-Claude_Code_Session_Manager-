@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ccsm"
+version = "0.1.0"
+description = "Switch which Claude subscription account a running Claude Code session uses, without /login or a restart"
+readme = "README.md"
+license = { file = "LICENSE" }
+keywords = ["claude", "claude-code", "oauth", "account-switcher", "cli"]
+requires-python = ">=3.9"
+dependencies = []
+classifiers = [
+    "Environment :: Console",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[project.scripts]
+ccsm = "ccsm.cli:main"
+
+[tool.setuptools]
+packages = ["ccsm"]
