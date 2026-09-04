@@ -1,0 +1,763 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ccsm — Claude Code Session Manager</title>
+<meta name="description" content="Switch which Claude subscription account a running Claude Code session authenticates as — same process, same conversation, no browser after the first sign-in.">
+<meta property="og:title" content="ccsm — Claude Code Session Manager">
+<meta property="og:description" content="Switch Claude accounts inside a live Claude Code session. No /login, no /logout, no restart.">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#fffaf0">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='9' fill='%230a0a0a'/><circle cx='12' cy='16' r='6.4' fill='%23a4d4c5'/><circle cx='20.4' cy='16' r='8.4' fill='%230a0a0a'/><circle cx='20.4' cy='16' r='6.4' fill='%23ff4d8b'/></svg>">
+<style>
+  :root{
+    /* brand + accent */
+    --primary:#0a0a0a; --brand-pink:#ff4d8b; --brand-teal:#1a3a3a;
+    --brand-lavender:#b8a4ed; --brand-peach:#ffb084; --brand-ochre:#e8b94a;
+    --brand-mint:#a4d4c5; --brand-coral:#ff6b5a;
+    /* surface */
+    --canvas:#fffaf0; --surface-soft:#faf5e8; --surface-card:#f5f0e0;
+    --surface-strong:#ebe6d6; --hairline:#e5e5e5;
+    /* text */
+    --ink:#0a0a0a; --body-strong:#1a1a1a; --body:#3a3a3a;
+    --muted:#6a6a6a; --muted-soft:#9a9a9a; --on-primary:#ffffff;
+    /* radius */
+    --r-xs:6px; --r-sm:8px; --r-md:12px; --r-lg:16px; --r-xl:24px; --r-pill:9999px;
+    /* spacing */
+    --s-xxs:4px; --s-xs:8px; --s-sm:12px; --s-md:16px; --s-lg:24px;
+    --s-xl:32px; --s-xxl:48px; --s-section:96px;
+    --sans:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth;scroll-padding-top:84px}
+  body{
+    margin:0;background:var(--canvas);color:var(--body);
+    font-family:var(--sans);font-size:16px;line-height:1.55;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1280px;margin:0 auto;padding:0 var(--s-lg)}
+  .prose{max-width:70ch}
+
+  /* ---- type scale: display is Inter 500 + negative tracking (Plain Black substitute) */
+  h1,h2,h3,h4{color:var(--ink);margin:0;text-wrap:balance}
+  .display-xl{font-size:72px;font-weight:500;line-height:1.0;letter-spacing:-2.5px}
+  .display-lg{font-size:56px;font-weight:500;line-height:1.05;letter-spacing:-2px}
+  .display-md{font-size:40px;font-weight:500;line-height:1.1;letter-spacing:-1px}
+  .display-sm{font-size:32px;font-weight:500;line-height:1.15;letter-spacing:-.5px}
+  .title-lg{font-size:24px;font-weight:600;line-height:1.3;letter-spacing:-.3px}
+  .title-md{font-size:18px;font-weight:600;line-height:1.4}
+  .title-sm{font-size:16px;font-weight:600;line-height:1.4}
+  .body-md{font-size:16px;font-weight:400;line-height:1.55}
+  .body-sm{font-size:14px;font-weight:400;line-height:1.55}
+  .caption{font-size:13px;font-weight:500;line-height:1.4}
+  .caption-up{font-size:12px;font-weight:600;line-height:1.4;letter-spacing:1.5px;text-transform:uppercase}
+  p{margin:0 0 var(--s-md)}
+  a{color:var(--ink)}
+  a:focus-visible,button:focus-visible{outline:2px solid var(--primary);outline-offset:3px;border-radius:var(--r-xs)}
+  code{font-family:var(--mono);font-size:.86em}
+
+  /* ---- nav */
+  .top-nav{position:sticky;top:0;z-index:40;height:64px;background:var(--canvas);
+           border-bottom:1px solid var(--hairline)}
+  .top-nav .wrap{display:flex;align-items:center;height:64px;gap:var(--s-lg)}
+  .brand{display:flex;align-items:center;gap:10px;text-decoration:none;font-weight:600;
+         font-size:17px;letter-spacing:-.4px;color:var(--ink)}
+  .brand svg{width:24px;height:24px;display:block;flex:none}
+  .nav-menu{display:flex;gap:var(--s-xs);margin-left:var(--s-lg)}
+  .nav-link{font-size:14px;font-weight:500;color:var(--muted);text-decoration:none;
+            padding:8px 12px;border-radius:var(--r-sm)}
+  .nav-link:hover{color:var(--ink)}
+  .nav-right{margin-left:auto;display:flex;align-items:center;gap:var(--s-sm)}
+  .burger{display:none;background:none;border:1px solid var(--hairline);border-radius:var(--r-sm);
+          width:40px;height:40px;cursor:pointer;padding:0}
+  .burger span{display:block;width:16px;height:1.5px;background:var(--ink);margin:3px auto}
+
+  /* ---- buttons */
+  .btn{font-family:var(--sans);font-size:14px;font-weight:600;line-height:1;text-decoration:none;
+       height:44px;padding:0 20px;border-radius:var(--r-md);display:inline-flex;
+       align-items:center;justify-content:center;border:1px solid transparent;cursor:pointer}
+  .btn-primary{background:var(--primary);color:var(--on-primary)}
+  .btn-secondary{background:var(--canvas);color:var(--ink);border-color:var(--hairline)}
+  .btn-on-color{background:#fff;color:var(--ink)}
+  .btn-link{background:none;border:0;font-size:14px;font-weight:500;color:var(--muted);
+            text-decoration:none;padding:0 4px;cursor:pointer}
+  .btn-link:hover{color:var(--ink)}
+
+  /* ---- sections */
+  section{padding:var(--s-section) 0}
+  .sec-head{margin-bottom:var(--s-xl);max-width:70ch}
+  .sec-head .caption-up{color:var(--muted-soft);margin-bottom:var(--s-sm)}
+  .sec-head p{color:var(--muted);margin-top:var(--s-md)}
+
+  /* ---- hero 7/5 */
+  .hero{padding:var(--s-section) 0 var(--s-xxl)}
+  .hero-grid{display:grid;gap:var(--s-xxl);align-items:center}
+  @media(min-width:1024px){.hero-grid{grid-template-columns:7fr 5fr}}
+  .hero p.lede{font-size:18px;color:var(--body);max-width:52ch;margin:var(--s-lg) 0 var(--s-xl)}
+  .hero-row{display:flex;flex-wrap:wrap;gap:var(--s-sm);align-items:center}
+  .hero-note{font-size:14px;color:var(--muted);margin-top:var(--s-lg)}
+  .hero-art{background:var(--surface-soft);border-radius:var(--r-xl);padding:var(--s-lg)}
+
+  /* ---- terminal fragment */
+  .term{background:var(--primary);border-radius:var(--r-lg);overflow:hidden}
+  .term .bar{display:flex;gap:6px;padding:12px 14px}
+  .term .bar i{width:10px;height:10px;border-radius:50%;background:#ffffff26;display:block}
+  .term pre{margin:0;padding:4px 16px 18px;overflow-x:auto;font-family:var(--mono);
+            font-size:12px;line-height:1.8;color:#d8d2c4}
+  .t-pink{color:#ff85ae}.t-mut{color:#8f8a7e}.t-cream{color:#f5f0e0}
+  .t-mint{color:#a4d4c5}.t-ochre{color:#e8b94a}
+
+  /* ---- feature cards */
+  .cards{display:grid;gap:var(--s-lg)}
+  @media(min-width:768px){.cards{grid-template-columns:repeat(2,1fr)}}
+  @media(min-width:1024px){.cards-3{grid-template-columns:repeat(3,1fr)}}
+  .fcard{border-radius:var(--r-xl);padding:var(--s-xl);display:flex;flex-direction:column;gap:var(--s-md)}
+  .fcard h3{font-size:18px;font-weight:600;line-height:1.4}
+  .fcard p{font-size:14px;line-height:1.55;margin:0}
+  .f-pink{background:var(--brand-pink)}
+  .f-teal{background:var(--brand-teal)}
+  .f-lavender{background:var(--brand-lavender)}
+  .f-peach{background:var(--brand-peach)}
+  .f-ochre{background:var(--brand-ochre)}
+  .f-cream{background:var(--surface-card)}
+  .f-pink h3,.f-pink p,.f-teal h3,.f-teal p{color:var(--on-primary)}
+  .f-pink p,.f-teal p{opacity:.9}
+  .f-lavender h3,.f-peach h3,.f-ochre h3,.f-cream h3{color:var(--ink)}
+  .f-lavender p,.f-peach p,.f-ochre p,.f-cream p{color:var(--body-strong)}
+  /* product UI fragment inside a colored card */
+  .frag{font-family:var(--mono);font-size:11.5px;line-height:1.75;border-radius:var(--r-md);
+        padding:var(--s-sm) var(--s-md);overflow-x:auto;margin-top:auto;white-space:pre}
+  .f-pink .frag,.f-teal .frag{background:#00000038;color:#f2ede1}
+  .f-lavender .frag,.f-peach .frag,.f-ochre .frag,.f-cream .frag{background:#ffffff8c;color:var(--ink)}
+
+  /* ---- alert as ochre card */
+  .alert{background:var(--brand-ochre);border-radius:var(--r-xl);padding:var(--s-xl)}
+  .alert h3{font-size:24px;font-weight:600;letter-spacing:-.3px;margin-bottom:var(--s-md)}
+  .alert p{color:var(--body-strong);font-size:15px;max-width:78ch}
+  .alert p:last-child{margin-bottom:0}
+  .plat-grid{display:grid;gap:var(--s-sm);margin:var(--s-lg) 0}
+  @media(min-width:768px){.plat-grid{grid-template-columns:repeat(2,1fr)}}
+  .plat{background:#ffffff8c;border-radius:var(--r-md);padding:var(--s-sm) var(--s-md)}
+  .plat b{display:block;font-size:14px;font-weight:600;color:var(--ink)}
+  .plat span{font-family:var(--mono);font-size:11.5px;color:var(--body)}
+
+  /* ---- code blocks */
+  .code{position:relative;margin:0 0 var(--s-md)}
+  .code pre{background:var(--surface-card);border-radius:var(--r-md);padding:var(--s-md);
+            overflow-x:auto;font-family:var(--mono);font-size:13px;line-height:1.75;
+            margin:0;color:var(--ink)}
+  .code .cp{position:absolute;top:8px;right:8px;font-family:var(--sans);font-size:12px;
+            font-weight:600;background:var(--canvas);border:1px solid var(--hairline);
+            color:var(--muted);border-radius:var(--r-sm);padding:6px 12px;cursor:pointer}
+  .code .cp:hover{color:var(--ink)}
+
+  /* ---- tabs */
+  .tabs{display:flex;gap:var(--s-xs);margin-bottom:var(--s-md);flex-wrap:wrap}
+  .tab{font-family:var(--sans);font-size:14px;font-weight:500;padding:8px 16px;
+       border-radius:var(--r-pill);border:0;background:transparent;color:var(--muted);cursor:pointer}
+  .tab[aria-selected=true]{background:var(--surface-card);color:var(--ink);font-weight:600}
+  .panel[hidden]{display:none}
+
+  /* ---- tables */
+  .tw{overflow-x:auto;background:var(--canvas);border:1px solid var(--hairline);
+      border-radius:var(--r-lg);margin:var(--s-md) 0 var(--s-lg)}
+  table{border-collapse:collapse;width:100%;font-size:14px;min-width:560px}
+  th,td{text-align:left;padding:12px 16px;border-bottom:1px solid var(--hairline);vertical-align:top}
+  thead th{font-size:12px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;
+           color:var(--muted-soft);background:var(--surface-soft)}
+  tbody tr:last-child td{border-bottom:0}
+  td.cmd{white-space:nowrap;font-family:var(--mono);font-size:13px;color:var(--ink);font-weight:500}
+  td{color:var(--body)}
+
+  /* ---- keys + steps */
+  .keys{display:flex;flex-wrap:wrap;gap:var(--s-xs)}
+  .badge-pill{background:var(--surface-card);border-radius:var(--r-pill);padding:8px 16px;
+              font-size:13px;font-weight:500;color:var(--body)}
+  .badge-pill b{font-family:var(--mono);color:var(--ink);margin-right:8px}
+  .steps{counter-reset:s;list-style:none;padding:0;margin:0}
+  .steps>li{counter-increment:s;position:relative;padding-left:52px;margin-bottom:var(--s-xl)}
+  .steps>li::before{content:counter(s);position:absolute;left:0;top:0;width:32px;height:32px;
+    border-radius:var(--r-pill);background:var(--primary);color:var(--on-primary);
+    font-size:14px;font-weight:600;display:grid;place-items:center}
+  .steps h3{font-size:18px;font-weight:600;margin-bottom:var(--s-xs)}
+  .steps p{color:var(--muted);font-size:15px;margin-bottom:var(--s-sm);max-width:70ch}
+
+  /* the nine steps: an ordered list, because the order is the information */
+  .seq-card{display:grid;gap:var(--s-xl)}
+  @media(min-width:900px){.seq-card{grid-template-columns:1.15fr .85fr;align-items:start}}
+  .seq{list-style:none;counter-reset:q;padding:0;margin:var(--s-md) 0 0;display:grid;gap:10px}
+  .seq li{counter-increment:q;display:flex;gap:var(--s-sm);align-items:flex-start;
+          font-size:14.5px;line-height:1.45;color:var(--on-primary)}
+  .seq li::before{content:counter(q);flex:none;width:26px;height:26px;border-radius:var(--r-pill);
+          background:#ffffff1f;color:var(--brand-mint);font-family:var(--mono);font-size:12px;
+          font-weight:700;display:grid;place-items:center}
+  .seq li span{padding-top:3px}
+  .seq em{font-style:normal;background:var(--brand-ochre);color:var(--ink);font-family:var(--sans);
+          font-size:11px;font-weight:600;border-radius:var(--r-pill);padding:2px 9px;
+          margin-left:8px;white-space:nowrap}
+  .seq-note{background:#00000033;border-radius:var(--r-lg);padding:var(--s-lg)}
+  .seq-note p{color:var(--on-primary);opacity:.92;font-size:14px;line-height:1.6}
+  .seq-note p:last-child{margin-bottom:0}
+
+  ul.plain{padding-left:20px;margin:0}
+  ul.plain li{margin-bottom:var(--s-sm);color:var(--body);max-width:72ch}
+  ul.plain li strong{color:var(--ink);font-weight:600}
+
+  /* ---- cta band + footer */
+  .cta-band{background:var(--surface-soft);border-radius:var(--r-xl);padding:80px var(--s-xl);
+            text-align:center}
+  .cta-motif{display:flex;justify-content:center;margin-bottom:var(--s-lg)}
+  /* the knockout ring has to match the card it sits on, or the overlap reads wrong */
+  .cta-motif span{width:34px;height:34px;border-radius:50%;border:3px solid var(--surface-soft)}
+  .cta-motif span+span{margin-left:-12px}
+  .cta-band p{color:var(--muted);max-width:56ch;margin:var(--s-md) auto var(--s-xl)}
+  .cta-row{display:flex;gap:var(--s-sm);justify-content:center;flex-wrap:wrap}
+  footer{background:var(--surface-soft);padding:80px 0 0}
+  .fgrid{display:grid;gap:var(--s-xl)}
+  @media(min-width:768px){.fgrid{grid-template-columns:2fr 1fr 1fr 1fr}}
+  footer h4{font-size:12px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;
+            color:var(--muted-soft);margin-bottom:var(--s-sm)}
+  footer ul{list-style:none;padding:0;margin:0}
+  footer li{margin-bottom:var(--s-xs)}
+  footer a{font-size:14px;color:var(--body);text-decoration:none}
+  footer a:hover{color:var(--ink)}
+  .fnote{font-size:14px;color:var(--muted);max-width:34ch;margin-top:var(--s-sm)}
+  .horizon{display:block;width:100%;height:170px;margin-top:var(--s-xxl)}
+  @media(max-width:767px){.horizon{height:110px}}
+
+  @media(max-width:1023px){.display-xl{font-size:52px;letter-spacing:-1.6px}}
+  @media(max-width:767px){
+    .display-xl{font-size:36px;letter-spacing:-1.2px}
+    .display-lg{font-size:34px;letter-spacing:-1px}
+    .display-md{font-size:28px;letter-spacing:-.6px}
+    .nav-menu{display:none;position:absolute;top:64px;left:0;right:0;background:var(--canvas);
+      border-bottom:1px solid var(--hairline);flex-direction:column;padding:var(--s-sm);margin:0}
+    .nav-menu.open{display:flex}
+    .burger{display:block}
+    section{padding:64px 0}
+    .cta-band{padding:var(--s-xxl) var(--s-lg)}
+  }
+  @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+</style>
+</head>
+<body>
+
+<nav class="top-nav">
+  <div class="wrap">
+    <a class="brand" href="#top"><svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="#0a0a0a"/><circle cx="12" cy="16" r="6.4" fill="#a4d4c5"/><circle cx="20.4" cy="16" r="8.4" fill="#0a0a0a"/><circle cx="20.4" cy="16" r="6.4" fill="#ff4d8b"/></svg>ccsm</a>
+    <div class="nav-menu" id="menu">
+      <a class="nav-link" href="#install">Install</a>
+      <a class="nav-link" href="#start">Quick start</a>
+      <a class="nav-link" href="#docs">Docs</a>
+      <a class="nav-link" href="#how">How it works</a>
+      <a class="nav-link" href="#safety">Safety</a>
+    </div>
+    <div class="nav-right">
+      <a class="btn-link" href="https://github.com/REPLACE-ME/ccsm/blob/main/SECURITY.md">Security</a>
+      <a class="btn btn-primary" href="https://github.com/REPLACE-ME/ccsm">GitHub</a>
+      <button class="burger" id="burger" aria-label="Menu" aria-expanded="false">
+        <span></span><span></span><span></span>
+      </button>
+    </div>
+  </div>
+</nav>
+
+<div id="top"></div>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap hero-grid">
+    <div>
+      <p class="caption-up" style="color:var(--muted-soft);margin-bottom:var(--s-md)">
+        Claude Code Session Manager
+      </p>
+      <h1 class="display-xl">Switch Claude accounts without leaving the session</h1>
+      <p class="lede">
+        Keep several Claude subscription accounts signed in at once and change which one a
+        <strong>running</strong> Claude Code session authenticates as. Same process, same
+        conversation, same context — no <code>/login</code>, no <code>/logout</code>, no restart.
+      </p>
+      <div class="hero-row">
+        <a class="btn btn-primary" href="#install">Install</a>
+        <a class="btn btn-secondary" href="#docs">Command reference</a>
+      </div>
+      <p class="hero-note">
+        Sign in once per account. After that <code>A → B → A → C</code> costs no browser.
+        Measured switch latency: <strong style="color:var(--ink)">~360&nbsp;ms</strong>.
+      </p>
+    </div>
+
+    <div class="hero-art">
+      <div class="term">
+        <div class="bar"><i></i><i></i><i></i></div>
+<pre><span class="t-cream">  ccsm</span>  <span class="t-mut">claude code session manager        v0.1.0</span>
+<span class="t-mut">  ──────────────────────────────────────────────</span>
+
+    <span class="t-mut">PROFILE     IDENTITY            PLAN   AUTH</span>
+
+ <span class="t-pink">▸</span> <span class="t-pink">●</span> <span class="t-cream">Personal    </span><span class="t-mut">m•••••e@gmail.com   </span><span class="t-ochre">Max    </span><span class="t-mint">OK</span>
+     <span class="t-cream">Company     </span><span class="t-mut">m•••••y@acme.com    </span><span class="t-ochre">Max    </span><span class="t-mint">OK</span>
+     <span class="t-cream">Friend      </span><span class="t-mut">Unavailable         —      UNKNOWN</span>
+
+  <span class="t-ochre">↑↓</span> <span class="t-mut">move</span>  <span class="t-ochre">⏎</span> <span class="t-mut">switch</span>  <span class="t-ochre">a</span> <span class="t-mut">add</span>  <span class="t-ochre">q</span> <span class="t-mut">quit</span></pre>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- ============ WARNING (ochre) ============ -->
+<section style="padding-top:0">
+  <div class="wrap">
+    <div class="alert">
+      <h3>Read this before installing</h3>
+      <p>
+        ccsm stores your Claude OAuth credentials and <strong>writes into Claude Code's own
+        config</strong>. It depends on undocumented behaviour, reverse-engineered from Claude
+        Code&nbsp;2.1.259 on Windows.
+      </p>
+      <div class="plat-grid">
+        <div class="plat"><b>Windows</b><span>Verified</span></div>
+        <div class="plat"><b>Linux / WSL</b><span>Expected to work — not validated</span></div>
+        <div class="plat"><b>macOS</b><span>Not supported — refuses rather than guessing</span></div>
+        <div class="plat"><b>Billing attribution</b><span>Unproven</span></div>
+      </div>
+      <p>
+        A switch modifies <code>~/.claude.json</code> — your project history, trust settings
+        and MCP config live there. ccsm changes only the <code>oauthAccount</code> key and
+        writes a <code>.ccsm-backup</code> first, but that is the blast radius if something
+        is wrong. That switching changes which account Anthropic <em>bills</em> has never
+        been demonstrated end to end.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ FEATURE CARDS: pink → lavender → peach ============ -->
+<section style="padding-top:0">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="caption-up">What it does</p>
+      <h2 class="display-lg">Three things that make it safe</h2>
+    </div>
+    <div class="cards cards-3">
+
+      <article class="fcard f-pink">
+        <h3>One process, one conversation</h3>
+        <p>Claude Code reads its credential while building each request, not at startup.
+           Replace it and the next request goes out as a different account.</p>
+        <div class="frag">PID     27396 → 27396
+session cbd3cd03 → cbd3cd03
+req #1  ACCOUNT-A
+req #2  ACCOUNT-B
+req #3  ACCOUNT-A</div>
+      </article>
+
+      <article class="fcard f-lavender">
+        <h3>An account is two files</h3>
+        <p>The token authenticates; a separate <code>oauthAccount</code> block carries the
+           identity. ccsm publishes both together, or neither.</p>
+        <div class="frag">.credentials.json
+  └ the OAuth token
+
+.claude.json → oauthAccount
+  └ accountUuid, email, tier</div>
+      </article>
+
+      <article class="fcard f-peach">
+        <h3>Fails closed, never silently</h3>
+        <p>A switch verifies the runtime really is the target account, and rolls both files
+           back if it is not. The previous profile stays active.</p>
+        <div class="frag">SWITCH FAILED
+ runtime reports other@x.com,
+ expected me@acme.com
+ → both files restored
+ → personal still active</div>
+      </article>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ INSTALL ============ -->
+<section id="install">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="caption-up">Installation</p>
+      <h2 class="display-lg">Get it running</h2>
+      <p>Requires <strong style="color:var(--ink)">Python 3.9+</strong> and the
+         <strong style="color:var(--ink)">Claude Code CLI</strong> on your <code>PATH</code>.</p>
+    </div>
+
+    <div class="tabs" role="tablist">
+      <button class="tab" role="tab" aria-selected="true" data-panel="p-win">Windows</button>
+      <button class="tab" role="tab" aria-selected="false" data-panel="p-nix">Linux / WSL</button>
+      <button class="tab" role="tab" aria-selected="false" data-panel="p-mac">macOS</button>
+    </div>
+
+    <div class="panel" id="p-win" style="max-width:760px">
+      <div class="code"><button class="cp">Copy</button><pre>git clone https://github.com/REPLACE-ME/ccsm
+cd ccsm
+.\install.ps1</pre></div>
+      <p class="body-sm" style="color:var(--muted)">
+        Installs the <code>ccsm</code> command and the <code>/ccsm</code> skill. If
+        <code>ccsm</code> is not on your <code>PATH</code> afterwards, the installer prints
+        the exact directory to add.
+      </p>
+    </div>
+
+    <div class="panel" id="p-nix" hidden style="max-width:760px">
+      <div class="code"><button class="cp">Copy</button><pre>git clone https://github.com/REPLACE-ME/ccsm
+cd ccsm
+./install.sh</pre></div>
+      <p class="body-sm" style="color:var(--muted)">
+        The architecture should hold on Linux and WSL, but nobody has confirmed the
+        <code>.claude.json</code> location rule there yet. Please
+        <a href="https://github.com/REPLACE-ME/ccsm/issues">open an issue</a> with what you find.
+      </p>
+    </div>
+
+    <div class="panel" id="p-mac" hidden style="max-width:760px">
+      <p class="body-md" style="color:var(--body)">
+        <strong style="color:var(--ink)">Not supported.</strong> Claude Code keeps
+        credentials in the login Keychain, keyed to the config directory, and the naming is
+        undocumented. ccsm refuses rather than guessing — you get a clear message, not a crash.
+      </p>
+      <p class="body-sm" style="color:var(--muted)">
+        A Keychain backend is the single most useful contribution right now; the seam is
+        <code>KeychainCredentialStore</code> in <code>ccsm/credentials.py</code>.
+      </p>
+    </div>
+
+    <h3 class="title-lg" style="margin-top:var(--s-xl)">Uninstall</h3>
+    <div class="code" style="max-width:760px;margin-top:var(--s-sm)">
+      <button class="cp">Copy</button><pre>./install.sh --uninstall        # Windows:  .\install.ps1 -Uninstall</pre></div>
+    <p class="body-sm" style="color:var(--muted)">
+      Removes stored credentials, the command and the skill. Your Claude Code config
+      directory is left alone.
+    </p>
+  </div>
+</section>
+
+<!-- ============ QUICK START ============ -->
+<section id="start" style="background:var(--surface-soft)">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="caption-up">Quick start</p>
+      <h2 class="display-lg">From nothing to switching, in four steps</h2>
+    </div>
+
+    <ol class="steps" style="max-width:820px">
+      <li>
+        <h3>Enrol the account you are already signed in as</h3>
+        <p>No browser needed — it captures the live credential.</p>
+        <div class="code"><button class="cp">Copy</button><pre>ccsm adopt personal</pre></div>
+      </li>
+      <li>
+        <h3>Enrol a second account</h3>
+        <p>This one <em>does</em> need a browser. Open the manager and press <code>a</code>.
+           Use a private window, or claude.ai hands back the account you are already signed in as.</p>
+        <div class="code"><button class="cp">Copy</button><pre>ccsm</pre></div>
+      </li>
+      <li>
+        <h3>Confirm both are stored</h3>
+        <div class="code"><button class="cp">Copy</button><pre>$ ccsm list
+* personal      s*****0@gmail.com       pro      OK        2m ago
+  work          w*****k@acme.com        max      OK        1m ago</pre></div>
+      </li>
+      <li>
+        <h3>Switch</h3>
+        <p>Run it in a second terminal while a session is open — that session changes account
+           on its next request. Or type <code>/ccsm switch work</code> inside the session itself.</p>
+        <div class="code"><button class="cp">Copy</button><pre>ccsm switch work</pre></div>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- ============ DOCS ============ -->
+<section id="docs">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="caption-up">Reference</p>
+      <h2 class="display-lg">Every command, flag and key</h2>
+    </div>
+
+    <h3 class="title-lg">Command line</h3>
+    <div class="tw">
+      <table>
+        <thead><tr><th>Command</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td class="cmd">ccsm</td><td>Open the keyboard-driven profile manager.</td></tr>
+          <tr><td class="cmd">ccsm list</td><td>Every profile with masked identity, plan, auth state and last verification. <code>*</code> marks the active one.</td></tr>
+          <tr><td class="cmd">ccsm switch &lt;name&gt;</td><td>Make <code>&lt;name&gt;</code> the active account. Applies to the next model request, in the session already running. Never opens a browser.</td></tr>
+          <tr><td class="cmd">ccsm adopt &lt;name&gt;</td><td>Enrol the account currently signed in, with no browser round trip. The right way to add your first account.</td></tr>
+          <tr><td class="cmd">ccsm where</td><td>Detected Claude Code version, which config dir a switch targets, the store location, and why that dir was chosen.</td></tr>
+          <tr><td class="cmd">ccsm run [args]</td><td>Start Claude Code against the runtime as the active profile. Extra arguments pass straight through.</td></tr>
+          <tr><td class="cmd">ccsm uninstall [--yes]</td><td>Delete all ccsm data including stored credentials. <code>--yes</code> skips confirmation. Your Claude Code config dir is untouched.</td></tr>
+          <tr><td class="cmd">-v, --version</td><td>Print the ccsm version.</td></tr>
+          <tr><td class="cmd">-h, --help, help</td><td>Print usage.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 class="title-lg">Inside Claude Code</h3>
+    <p class="body-md prose" style="color:var(--muted)">
+      The installer places a <code>/ccsm</code> skill in <code>~/.claude/skills/</code>, so
+      these work from any session. A switch here changes the account for the conversation you
+      are typing in.
+    </p>
+    <div class="tw">
+      <table>
+        <thead><tr><th>Slash command</th><th>Equivalent</th></tr></thead>
+        <tbody>
+          <tr><td class="cmd">/ccsm</td><td><code>ccsm where</code> then <code>ccsm list</code></td></tr>
+          <tr><td class="cmd">/ccsm list</td><td><code>ccsm list</code></td></tr>
+          <tr><td class="cmd">/ccsm add &lt;name&gt;</td><td><code>ccsm adopt &lt;name&gt;</code></td></tr>
+          <tr><td class="cmd">/ccsm switch &lt;name&gt;</td><td><code>ccsm switch &lt;name&gt;</code></td></tr>
+          <tr><td class="cmd">/ccsm where</td><td><code>ccsm where</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 class="title-lg">Manager keys</h3>
+    <div class="keys" style="margin:var(--s-md) 0 var(--s-sm)">
+      <span class="badge-pill"><b>↑↓</b>move</span>
+      <span class="badge-pill"><b>⏎</b>switch</span>
+      <span class="badge-pill"><b>l</b>run Claude Code</span>
+      <span class="badge-pill"><b>a</b>add account</span>
+      <span class="badge-pill"><b>r</b>reverify</span>
+      <span class="badge-pill"><b>d</b>remove</span>
+      <span class="badge-pill"><b>u</b>usage</span>
+      <span class="badge-pill"><b>R</b>refresh</span>
+      <span class="badge-pill"><b>q</b>quit</span>
+    </div>
+    <p class="body-sm" style="color:var(--muted)">
+      In the usage panel: <code>↑↓</code> select a metric, <code>R</code> refresh,
+      <code>esc</code> back.
+    </p>
+
+    <h3 class="title-lg" style="margin-top:var(--s-xl)">Environment variables</h3>
+    <div class="tw">
+      <table>
+        <thead><tr><th>Variable</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td class="cmd">CCSM_HOME</td><td>Where ccsm keeps profiles and stored credentials. Default <code>%APPDATA%\ccsm</code> or <code>$XDG_CONFIG_HOME/ccsm</code>.</td></tr>
+          <tr><td class="cmd">CCSM_RUNTIME</td><td>Force which config dir a switch publishes into. Overrides everything else.</td></tr>
+          <tr><td class="cmd">CLAUDE_CONFIG_DIR</td><td>Read, never set — when the calling session has it, ccsm follows it. Otherwise the target is <code>~/.claude</code>.</td></tr>
+          <tr><td class="cmd">CCSM_CLAUDE_BIN</td><td>Path to the Claude Code executable, if it is not on <code>PATH</code>.</td></tr>
+          <tr><td class="cmd">CCSM_FORCE_FILE_STORE</td><td>Use the file backend on macOS anyway. Unsupported; at your own risk.</td></tr>
+          <tr><td class="cmd">NO_COLOR</td><td>Honoured — disables colour in the manager.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 class="title-lg">Where things live</h3>
+    <div class="code" style="max-width:820px;margin-top:var(--s-sm)">
+      <button class="cp">Copy</button><pre>&lt;ccsm home&gt;/
+  profiles.json          profile metadata, no secrets
+  store/&lt;id&gt;.json        one account bundle per profile, 0600
+  enroll/&lt;id&gt;/           throwaway config dir, used only to run /login
+  switch.lock            ccsm's own switch lock
+
+~/.claude/.credentials.json      the OAuth token   — read + atomically replaced
+~/.claude.json  → oauthAccount   the identity      — only this key is written
+~/.claude.json.ccsm-backup       written once, before the first modification</pre></div>
+  </div>
+</section>
+
+<!-- ============ HOW IT WORKS (teal) ============ -->
+<section id="how">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="caption-up">Mechanism</p>
+      <h2 class="display-lg">What a switch actually does</h2>
+      <p>Nine steps, in this order, because the order is what makes it safe.</p>
+    </div>
+
+    <div class="cards" style="grid-template-columns:1fr">
+      <article class="fcard f-teal seq-card">
+        <div>
+          <h3>The sequence</h3>
+          <ol class="seq">
+            <li><span>Take ccsm's switch lock</span></li>
+            <li><span>Wait out Claude Code's OAuth refresh lock, if held</span></li>
+            <li><span>Read the live credential</span></li>
+            <li><span>Save it back to the profile it belongs to <em>harvest</em></span></li>
+            <li><span>Read the target profile's stored bundle</span></li>
+            <li><span>Publish credential <strong>and</strong> oauthAccount atomically</span></li>
+            <li><span>Verify the runtime reports the target accountUuid</span></li>
+            <li><span>Mark the target active</span></li>
+            <li><span>Release the lock</span></li>
+          </ol>
+        </div>
+        <div class="seq-note">
+          <p><strong>Steps 3–4 are the ones that are easy to skip.</strong> Claude Code
+            refreshes OAuth tokens in place, so the live credential drifts ahead of the
+            store. Publish over it without harvesting and the outgoing profile keeps a
+            stale token — sending you back to a browser you did not need.</p>
+          <p>Anything after step 6 that fails rolls <strong>both</strong> files back exactly
+            as they were, leaves the previous profile active, and fails closed.</p>
+        </div>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ============ SAFETY ============ -->
+<section id="safety" style="background:var(--surface-soft)">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="caption-up">Safety</p>
+      <h2 class="display-lg">What it guards, and what it does not</h2>
+    </div>
+    <ul class="plain">
+      <li><strong>Silent account substitution.</strong> <code>ANTHROPIC_API_KEY</code> and friends are scrubbed from every child process. Without that, an unauthenticated runtime falls through to whatever key is in your environment and reports itself logged in as a different account.</li>
+      <li><strong>Publishing an unverified identity.</strong> A switch confirms the runtime authenticates as the target <code>accountUuid</code> before marking it active, and rolls back if not.</li>
+      <li><strong>Destroying a login you did not enrol.</strong> A switch refuses to publish over a credential ccsm holds no copy of.</li>
+      <li><strong>Mis-attributing a credential.</strong> Harvest requires a positive identity match; a missing identity is never read as agreement.</li>
+      <li><strong>It is not a vault.</strong> Anything that can read <code>~/.claude/.credentials.json</code> can read ccsm's store. It holds the same class of secret in the same trust domain — just more than one of them.</li>
+      <li><strong>Out of scope, permanently.</strong> Automatic rotation, switching in response to a rate limit, or anything that evades usage controls. Switching is an explicit user action by design.</li>
+    </ul>
+    <p style="margin-top:var(--s-lg)">
+      <a class="btn btn-secondary" href="https://github.com/REPLACE-ME/ccsm/blob/main/SECURITY.md">
+        Full security model
+      </a>
+    </p>
+  </div>
+</section>
+
+<!-- ============ CTA ============ -->
+<section class="cta-section">
+  <div class="wrap">
+    <div class="cta-band">
+      <div class="cta-motif" aria-hidden="true">
+        <span style="background:var(--brand-mint)"></span>
+        <span style="background:var(--brand-peach)"></span>
+        <span style="background:var(--brand-pink)"></span>
+      </div>
+      <h2 class="display-md">Stop signing in twice a day</h2>
+      <p>Enrol each account once. Switch as often as you like, inside the session you are
+         already working in.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="#install">Install ccsm</a>
+        <a class="btn btn-secondary" href="https://github.com/REPLACE-ME/ccsm">View source</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ FOOTER ============ -->
+<footer>
+  <div class="wrap fgrid">
+    <div>
+      <a class="brand" href="#top"><svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="#0a0a0a"/><circle cx="12" cy="16" r="6.4" fill="#a4d4c5"/><circle cx="20.4" cy="16" r="8.4" fill="#0a0a0a"/><circle cx="20.4" cy="16" r="6.4" fill="#ff4d8b"/></svg>ccsm</a>
+      <p class="fnote">Switch which Claude subscription account a running Claude Code
+        session uses. Standard library only, no dependencies.</p>
+    </div>
+    <div>
+      <h4>Docs</h4>
+      <ul>
+        <li><a href="#install">Install</a></li>
+        <li><a href="#start">Quick start</a></li>
+        <li><a href="#docs">Commands</a></li>
+        <li><a href="#how">How it works</a></li>
+      </ul>
+    </div>
+    <div>
+      <h4>Project</h4>
+      <ul>
+        <li><a href="https://github.com/REPLACE-ME/ccsm">Source</a></li>
+        <li><a href="https://github.com/REPLACE-ME/ccsm/issues">Issues</a></li>
+        <li><a href="https://github.com/REPLACE-ME/ccsm/blob/main/CONTRIBUTING.md">Contributing</a></li>
+        <li><a href="https://github.com/REPLACE-ME/ccsm/blob/main/LICENSE">MIT licence</a></li>
+      </ul>
+    </div>
+    <div>
+      <h4>Safety</h4>
+      <ul>
+        <li><a href="https://github.com/REPLACE-ME/ccsm/blob/main/SECURITY.md">Security model</a></li>
+        <li><a href="#safety">What it guards</a></li>
+        <li><a href="#top">Platform support</a></li>
+      </ul>
+    </div>
+  </div>
+
+  <svg class="horizon" viewBox="0 0 1440 200" preserveAspectRatio="none" role="img"
+       aria-label="Illustrated horizon of soft rounded hills closing the page">
+    <defs>
+      <linearGradient id="hL" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#c9b6f2"/><stop offset="1" stop-color="#b8a4ed"/>
+      </linearGradient>
+      <linearGradient id="hM" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#bde0d4"/><stop offset="1" stop-color="#a4d4c5"/>
+      </linearGradient>
+      <linearGradient id="hP" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#ffc9a3"/><stop offset="1" stop-color="#ffb084"/>
+      </linearGradient>
+      <linearGradient id="hO" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#f0c75e"/><stop offset="1" stop-color="#e8b94a"/>
+      </linearGradient>
+    </defs>
+    <path fill="url(#hL)" d="M -140 200 Q 150 44 440 200 Z"/>
+    <path fill="url(#hM)" d="M 1000 200 Q 1260 34 1520 200 Z"/>
+    <path fill="url(#hP)" d="M 240 200 Q 620 4 1000 200 Z"/>
+    <path fill="url(#hO)" d="M -20 200 L -20 168 Q 340 142 700 160 Q 1060 178 1460 152 L 1460 200 Z"/>
+  </svg>
+
+  <div style="background:var(--surface-strong);padding:var(--s-md) 0">
+    <div class="wrap" style="font-size:13px;color:var(--ink);display:flex;
+                             flex-wrap:wrap;gap:var(--s-sm);justify-content:space-between">
+      <span>MIT licensed · Not affiliated with Anthropic</span>
+      <span>Verified against Claude Code 2.1.259</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var burger = document.getElementById("burger"), menu = document.getElementById("menu");
+  if (burger && menu) {
+    burger.addEventListener("click", function () {
+      var open = menu.classList.toggle("open");
+      burger.setAttribute("aria-expanded", String(open));
+    });
+    menu.addEventListener("click", function (e) {
+      if (e.target.classList.contains("nav-link")) {
+        menu.classList.remove("open");
+        burger.setAttribute("aria-expanded", "false");
+      }
+    });
+  }
+
+  var tabs = document.querySelectorAll(".tab");
+  tabs.forEach(function (t) {
+    t.addEventListener("click", function () {
+      tabs.forEach(function (o) {
+        o.setAttribute("aria-selected", String(o === t));
+        var p = document.getElementById(o.dataset.panel);
+        if (p) p.hidden = o !== t;
+      });
+    });
+  });
+
+  document.querySelectorAll(".code .cp").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var pre = b.parentNode.querySelector("pre");
+      if (!pre) return;
+      var done = function () {
+        b.textContent = "Copied";
+        setTimeout(function () { b.textContent = "Copy"; }, 1400);
+      };
+      try { navigator.clipboard.writeText(pre.innerText).then(done, done); }
+      catch (e) { done(); }
+    });
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+# Normalise to LF in the repo; check out native on Windows.
+* text=auto
+
+# Shell scripts MUST keep LF or they fail on Linux with "bad interpreter".
+*.sh text eol=lf
+install.sh text eol=lf
+
+# PowerShell is happiest with CRLF on Windows.
+*.ps1 text eol=crlf
