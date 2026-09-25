@@ -460,6 +460,55 @@ def test_tui_never_draws_past_the_terminal_width():
             os.environ["COLUMNS"] = saved
 
 
+def test_tui_messages_say_what_to_do_and_whose_usage_it_is():
+    import contextlib
+    import io
+    import re
+
+    profiles, creds, a, b, rt = fresh("labels")
+    real = auth.status, auth.version_warning, tui.read_key, os.environ.get("COLUMNS")
+    calls = []
+    auth.status = lambda *_a, **_k: {"loggedIn": True}
+    auth.version_warning = lambda: calls.append(1) or "UNVERIFIED-VERSION"
+    tui.read_key = lambda: "n"
+    os.environ["COLUMNS"] = "60"
+
+    def screen(action):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            action()
+        text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", out.getvalue())
+        return " ".join(ln.strip() for ln in text.split("\r\n"))
+
+    try:
+        app = tui.App()
+        app.sel = 1
+        app.do_switch()
+        assert "UNVERIFIED-VERSION" in app.msg, "the TUI switch hid the version caution"
+        app.sel = 0
+        app.do_switch()
+        assert "UNVERIFIED-VERSION" not in app.msg and len(calls) == 1, "cautioned twice"
+
+        shown = screen(app.do_remove)
+        assert "adopt it again" in shown, "removing the live account gave no warning"
+        assert app.store.get("personal") is not None, "declining must keep the profile"
+
+        app.open_usage()
+        assert "shared by every profile" in screen(app.draw), "usage attributed to a profile"
+        app.view = "list"
+
+        creds.write_live(rt, bundle("X", "cccccccc-0000-4000-8000-0000000000cc", "c@z.com"))
+        app.sel = 1
+        app.do_switch()
+        assert "to keep it before switching" in screen(app.draw), "the error's advice was cut"
+    finally:
+        auth.status, auth.version_warning, tui.read_key = real[:3]
+        if real[3] is None:
+            os.environ.pop("COLUMNS", None)
+        else:
+            os.environ["COLUMNS"] = real[3]
+
+
 def test_owner_of_identifies_by_account_uuid():
     profiles, creds, a, b, rt = fresh("owner")
     assert owner_of(creds, profiles, bundle("X", UUID_B, "b@y.com")).id == "company"

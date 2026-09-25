@@ -20,16 +20,19 @@ Same process. Same conversation. No `/login`, no `/logout`, no restart.
 </div>
 
 ```
-  ccsm  claude code session manager                              v0.1.0
-  ─────────────────────────────────────────────────────────────────────
+  ccsm  claude code session manager                                         v0.1.0
+  ────────────────────────────────────────────────────────────────────────────────
+  live Personal · runtime ~/.claude
 
-      PROFILE       IDENTITY                PLAN     AUTH      VERIFIED
+       PROFILE         IDENTITY                  PLAN     AUTH      VERIFIED
 
-  ▸ ●  Personal      m•••••e@gmail.com       Max      OK        2m ago
-       Company       m•••••y@acme.com        Max      OK        1h ago
-       Friend        Unavailable             —        UNKNOWN   never
+  ▸ ●  Personal        m•••••e@gmail.com         Max      OK        2m ago
+       Company         m•••••y@acme.com          Max      OK        1h ago
+       Friend          Unavailable               —        UNKNOWN   never
 
-  ↑↓ move   ⏎ switch   l run   a add   r reverify   d remove   q quit
+       claude.ai · id personal
+
+  ↑↓ move   ⏎ switch   l run   a add   A adopt   r reverify   ? help   q quit
 ```
 
 Sign in to each account **once**. After that `A → B → A → C` costs no browser. Measured
@@ -130,8 +133,9 @@ ccsm switch work
 **Inside Claude Code:** `/ccsm`, `/ccsm list`, `/ccsm add <name>`, `/ccsm switch <name>`,
 `/ccsm where`.
 
-**Manager keys:** `↑↓` move · `⏎` switch · `l` run · `a` add · `r` reverify · `d` remove ·
-`u` usage · `R` refresh · `q` quit
+**Manager keys:** `↑↓` / `j` `k` move · `⏎` switch · `l` run · `a` add · `A` adopt ·
+`r` reverify · `d` remove · `u` usage · `R` refresh · `?` help · `q` quit. Digits move to a
+row and never switch. On a narrow terminal the keybar shows what fits; `?` lists every key.
 
 **Environment:** `CCSM_HOME` (data dir) · `CCSM_RUNTIME` (force the target config dir) ·
 `CCSM_CLAUDE_BIN` (Claude Code executable) · `NO_COLOR`

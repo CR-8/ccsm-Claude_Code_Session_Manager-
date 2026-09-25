@@ -205,6 +205,7 @@ class App:
         self.metrics: list = []
         self.msg = ""
         self.msg_kind = "dim"
+        self.cautioned = False
 
     # -- helpers
 
@@ -229,12 +230,14 @@ class App:
                                                                          self._list_body)
         lines += body()
         lines.append("")
+        # Wrapped, not cut: the end of an error is usually the part that says what to do.
+        lines += [f"  {C[self.msg_kind]}{chunk}{C['reset']}"
+                  for chunk in self._wrap(self.msg, w - 4)]
         if prompt:
             label, buf = prompt
             lines.append(f"  {C['coral']}{label}{C['reset']} {C['sel']}{buf}{CARET}{C['reset']}")
-        else:
-            msg = self.msg if len(self.msg) <= w - 4 else self.msg[: w - 5] + ELL
-            lines.append(f"  {C[self.msg_kind]}{msg}{C['reset']}" if msg else "")
+        elif not self.msg:
+            lines.append("")
         bar = {"usage": USAGE_KEYBAR, "help": HELP_KEYBAR}.get(self.view) or (
             KEYS if self.store.profiles else [k for k in KEYS if k[0] in EMPTY_KEYS])
         lines += ["", self._keybar(bar, w)]
@@ -338,8 +341,10 @@ class App:
         return lines
 
     def _usage_body(self) -> list[str]:
-        p = self.current
-        lines = [f"  {C['dim']}usage {MID} {C['reset']}{C['sel']}{p.name}{C['reset']}", ""]
+        # The stats cache belongs to the runtime, which every profile shares - so this is
+        # not the selected profile's usage, and must not be labelled as if it were.
+        lines = [f"  {C['dim']}usage {MID} this runtime, shared by every profile{C['reset']}",
+                 ""]
         for i, m in enumerate(self.metrics):
             cursor = f"{C['coral']}{ARROW}{C['reset']}" if i == self.metric else " "
             value_c = C["dim"] if m.value == usage.UNAVAILABLE else C["warm"]
@@ -366,6 +371,7 @@ class App:
     # -- input
 
     def prompt(self, label: str) -> str:
+        self.note("")
         buf = ""
         while True:
             self.draw(prompt=(label, buf))
@@ -379,7 +385,8 @@ class App:
             elif len(key) == 1 and key.isprintable() and len(buf) < 32:
                 buf += key
 
-    def confirm(self, question: str) -> bool:
+    def confirm(self, question: str, why: str = "") -> bool:
+        self.note(why, "warn")
         self.draw(prompt=(f"{question} (y/N)", ""))
         return read_key().lower() == "y"
 
@@ -466,7 +473,12 @@ class App:
 
     def do_remove(self) -> None:
         profile = self.current
-        if not self.confirm(f"remove '{profile.name}' and delete its runtime data?"):
+        why = ""
+        if profile.id == self.store.active:
+            # switch() refuses to publish over a live account ccsm does not hold.
+            why = (f"{profile.name} is the live account. Once it is removed, ccsm will not "
+                   f"switch away from it until you adopt it again with A.")
+        if not self.confirm(f"remove '{profile.name}' and delete its runtime data?", why):
             self.note("")
             return
         self.busy(f"removing {profile.name}")
@@ -485,20 +497,24 @@ class App:
         """Publish this profile's stored credential into the live runtime."""
         profile = self.current
         self.busy(f"switching to {profile.name}")
+        caution = None
+        if not silent and not self.cautioned:
+            # `ccsm switch` prints this before every switch; once a session is enough here.
+            self.cautioned, caution = True, auth.version_warning()
         try:
             result = switch(self.store, profile, self.creds, runtime_dir())
         except (SwitchError, auth.AuthError) as exc:
-            self.note(f"SWITCH FAILED - {exc}", "warn")
+            self.note(f"SWITCH FAILED - {exc}" + (f" ({caution})" if caution else ""), "warn")
             return
         if silent:
             return
-        note = "; ".join(result["notes"])
-        tail = f" ({note})" if note else ""
+        notes = result["notes"] + ([caution] if caution else [])
+        tail = f" ({'; '.join(notes)})" if notes else ""
         if result["already_active"]:
             self.note(f"{profile.name} is already active{tail}")
         else:
             self.note(f"{profile.name} active as {mask_email(profile.email)}"
-                      f" - applies to the next request{tail}", "ok")
+                      f" - applies to the next request{tail}", "warn" if caution else "ok")
 
     def do_launch(self) -> None:
         """Start Claude Code in the shared runtime as whichever profile is active."""
