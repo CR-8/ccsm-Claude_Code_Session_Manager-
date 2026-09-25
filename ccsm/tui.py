@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 from . import __version__, auth, usage
-from .credentials import bundle_credentials, clean_env, open_store
+from .credentials import account_uuid, bundle_credentials, clean_env, open_store
 from .launcher import launch, preflight
 from .profiles import (MAX_PROFILES, OK, REVERIFY, ProfileStore, ccsm_home, mask_email,
                        runtime_dir)
@@ -189,8 +189,10 @@ USAGE_KEYBAR = (("↑↓", "metric"), ("R", "refresh"), ("esc", "back"), ("q", "
 HELP_KEYBAR = (("any key", "back"), ("q", "quit"))
 
 # Table columns left to right, each width including the gap after it. When the terminal
-# is narrow, VERIFIED goes first, then IDENTITY, then PLAN; the detail line picks up slack.
-COLUMNS = (("PROFILE", 16), ("IDENTITY", 26), ("PLAN", 9), ("AUTH", 10), ("VERIFIED", 9))
+# is narrow they go in DROP_ORDER; the detail line picks up the identity.
+COLUMNS = (("PROFILE", 16), ("IDENTITY", 24), ("PLAN", 9), ("AUTH", 10),
+           ("5H LEFT", 9), ("WEEK LEFT", 11), ("VERIFIED", 9))
+DROP_ORDER = ("VERIFIED", "PLAN", "IDENTITY", "WEEK LEFT")
 ROW_INDENT = 7   # "  ▸ ●  "
 
 
@@ -287,7 +289,7 @@ class App:
 
     def _columns(self) -> list:
         cols = list(COLUMNS)
-        for name in ("VERIFIED", "IDENTITY", "PLAN"):
+        for name in DROP_ORDER:
             if ROW_INDENT + sum(n for _, n in cols) <= self.width() - 2:
                 break
             cols = [c for c in cols if c[0] != name]
@@ -301,13 +303,31 @@ class App:
                 for k in ("A", "a")]
         cols = self._columns()
         head = " " * ROW_INDENT + "".join(pad(name, n) for name, n in cols)
-        rows = [self._row(i, p, cols) for i, p in enumerate(self.store.profiles)]
-        return [f"{C['dim']}{head}{C['reset']}", ""] + rows + ["", self._detail(cols)]
+        # Limits are filed per account, so each profile is looked up by its stored accountUuid.
+        ok, _ = self.creds.available()
+        limits = usage.load_limits() if ok else {}
+        windows = [((limits.get(account_uuid(self.creds.get(p.id))) if ok else None) or {})
+                   for p in self.store.profiles]
+        rows = [self._row(i, p, cols, windows[i].get("windows", {}))
+                for i, p in enumerate(self.store.profiles)]
+        return ([f"{C['dim']}{head}{C['reset']}", ""] + rows
+                + ["", self._detail(cols, windows[self.sel])])
 
-    def _row(self, i: int, p, cols) -> str:
+    def _limit(self, windows: dict, key: str):
+        w = windows.get(key)
+        if not w:
+            return C["dim"], DASH
+        text = usage.left(w)
+        if text == "reset":
+            return C["dim"], text
+        return (C["warn"] if float(text[:-1]) <= 20 else C["ok"]), text
+
+    def _row(self, i: int, p, cols, windows: dict) -> str:
         cursor = f"{C['coral']}{ARROW}{C['reset']}" if i == self.sel else " "
         active = f"{C['coral']}{DOT}{C['reset']}" if p.id == self.store.active else " "
         cells = {
+            "5H LEFT": self._limit(windows, "five_hour"),
+            "WEEK LEFT": self._limit(windows, "seven_day"),
             "PROFILE": (C["sel"] if i == self.sel else C["text"], p.name),
             "IDENTITY": (C["dim"], mask_email(p.email)),
             "PLAN": (C["warm"], plan_label(p.plan)),
@@ -321,14 +341,21 @@ class App:
             row += f"{colour}{pad(text, n)}{C['reset']}"
         return row
 
-    def _detail(self, cols) -> str:
+    def _detail(self, cols, rec: dict) -> str:
         """What the table has no column for, for the selected profile only."""
         p = self.current
+        parts = [] if "IDENTITY" in dict(cols) else [mask_email(p.email)]
+        windows, now = rec.get("windows", {}), time.time()
+        for key, label in usage.WINDOWS:
+            w = windows.get(key)
+            if w:
+                verb = "resets" if w["resets_at"] > now else "reset"
+                parts.append(f"{label} {verb} {usage.clock(w['resets_at'])}")
+        if windows:
+            parts.append(f"read {ago(rec.get('seen'))}")
         # Not p.org: a personal account's org is "<full email>'s Organization", which
         # would undo mask_email for anyone who can see the screen.
-        parts = [p.auth_method, f"id {p.id}"]
-        if "IDENTITY" not in dict(cols):
-            parts.insert(0, mask_email(p.email))
+        parts += [p.auth_method, f"id {p.id}"]
         text = f" {MID} ".join(x for x in parts if x)
         return " " * ROW_INDENT + f"{C['dim']}{text}{C['reset']}"
 

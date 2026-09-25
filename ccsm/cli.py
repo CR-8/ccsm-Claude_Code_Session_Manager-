@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
+import subprocess
 import sys
 
-from . import __version__, auth, tui
-from .credentials import open_store
+from . import __version__, auth, tui, usage
+from .credentials import open_store, read_account
 from .launcher import launch, preflight
 from .profiles import ProfileStore, ccsm_home, mask_email, runtime_dir
 from .switcher import SwitchError, adopt, switch
@@ -21,6 +23,8 @@ USAGE = f"""ccsm {__version__} - Claude Code Session Manager
   ccsm adopt <name>          enrol the credential already signed in, no browser
   ccsm where                 show which config dir a switch would publish into
   ccsm run [args]            start Claude Code in the shared runtime
+  ccsm statusline [-- cmd]   Claude Code's statusLine command: record the 5-hour and
+                             weekly limits per account; `-- cmd` keeps an existing one
   ccsm uninstall [--yes]     delete all ccsm profile data and stored credentials
   ccsm --version | --help
 
@@ -122,6 +126,34 @@ def cmd_run(args: list[str]) -> int:
     return launch(runtime_dir(), args)
 
 
+def cmd_statusline(args: list[str]) -> int:
+    """Record the rate-limit reading Claude Code hands its statusline, then print a line.
+
+    `ccsm statusline -- <command>` passes the same input on to an existing statusline and
+    prints its output instead, so the user keeps theirs.
+    """
+    raw = sys.stdin.buffer.read()
+    runtime = runtime_dir()
+    try:
+        windows = usage.record_limits(json.loads(raw.decode("utf-8")), runtime)
+    except Exception:  # a statusline is drawn after every response; it must never fail
+        windows = None
+    command = args[1:] if args[:1] == ["--"] else args
+    if command:
+        try:
+            out = subprocess.run(command, input=raw, capture_output=True, timeout=10).stdout
+        except (OSError, subprocess.SubprocessError):
+            out = b""
+        sys.stdout.buffer.write(out)
+        sys.stdout.flush()
+        return 0
+    parts = [mask_email((read_account(runtime) or {}).get("emailAddress"))]
+    parts += [f"{label} {usage.left(windows[key], ' left')}"
+              for key, label in usage.WINDOWS if key in (windows or {})]
+    print(tui.enc(" · ".join(parts)))
+    return 0
+
+
 def cmd_uninstall(args: list[str]) -> int:
     home = ccsm_home()
     if not home.exists():
@@ -162,6 +194,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_where()
         if head == "run":
             return cmd_run(rest)
+        if head == "statusline":
+            return cmd_statusline(rest)
         if head == "uninstall":
             return cmd_uninstall(rest)
     except auth.AuthError as exc:

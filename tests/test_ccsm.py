@@ -22,7 +22,7 @@ os.environ["CCSM_FORCE_FILE_STORE"] = "1"      # exercise the file backend on an
 os.environ["CCSM_RUNTIME"] = str(Path(_TMP) / "runtime")
 os.environ.pop("CLAUDE_CONFIG_DIR", None)
 
-from ccsm import auth, tui, usage  # noqa: E402
+from ccsm import auth, cli, tui, usage  # noqa: E402
 from ccsm.credentials import (  # noqa: E402
     AUTH_ENV, DEFAULT_CONFIG_DIR, FileCredentialStore, KeychainCredentialStore,
     account_uuid, bundle_credentials, clean_env, config_json_path, expired,
@@ -507,6 +507,51 @@ def test_tui_messages_say_what_to_do_and_whose_usage_it_is():
             os.environ.pop("COLUMNS", None)
         else:
             os.environ["COLUMNS"] = real[3]
+
+
+def test_statusline_files_limits_under_the_live_account_only():
+    """The 5-hour and weekly limits are Claude Code's own reading, never ccsm's estimate,
+    and a reading is only ever filed under the account it belongs to."""
+    import contextlib
+    import io
+    import re
+
+    profiles, creds, a, b, rt = fresh("limits")
+    now = time.time()
+    reading = {"rate_limits": {"five_hour": {"used_percentage": 42, "resets_at": now + 3600},
+                               "seven_day": {"used_percentage": 90, "resets_at": now - 60}}}
+    real_stdin, saved = sys.stdin, os.environ.get("COLUMNS")
+    try:
+        sys.stdin = io.TextIOWrapper(io.BytesIO(json.dumps(reading).encode("utf-8")))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            assert cli.main(["statusline"]) == 0
+        assert "5h 58% left" in out.getvalue() and "week reset" in out.getvalue()
+        assert "reset left" not in out.getvalue()
+        assert usage.load_limits()[UUID_A]["windows"]["five_hour"]["used_percentage"] == 42
+
+        switch(profiles, b, creds, rt, check_identity=False)
+        assert usage.record_limits(reading, rt) is None, "A's last reading was filed under B"
+        assert UUID_B not in usage.load_limits()
+        assert usage.record_limits({"no": "rate_limits"}, rt) is None
+        assert {m.key: m for m in usage.collect(rt)}["session"].value == usage.UNAVAILABLE
+
+        os.environ["COLUMNS"] = "120"
+        app = tui.App()
+        app.sel = 0
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            app.draw()
+        text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", out.getvalue())
+        personal = next(ln for ln in text.split("\r\n") if "personal" in ln.lower())
+        assert "58%" in personal and "reset" in personal, "A's limits missing from its row"
+        assert "5h resets" in text and "week reset " in text, "reset times missing"
+    finally:
+        sys.stdin = real_stdin
+        if saved is None:
+            os.environ.pop("COLUMNS", None)
+        else:
+            os.environ["COLUMNS"] = saved
 
 
 def test_owner_of_identifies_by_account_uuid():
