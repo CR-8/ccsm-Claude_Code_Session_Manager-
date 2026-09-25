@@ -110,6 +110,30 @@ def status(config_dir, timeout: int = STATUS_TIMEOUT) -> dict | None:
     return _first_json(proc.stdout or "")
 
 
+def usage_text(config_dir, timeout: int = 60) -> str | None:
+    """Claude Code's own `/usage` report for one config dir, or None if it cannot be run.
+
+    A local command in print mode: it reads the account's limits and sends no prompt to a
+    model, so it spends no quota. It may refresh the OAuth token in `config_dir` - callers
+    that run it outside the live runtime must harvest the credential afterwards.
+    """
+    try:
+        proc = subprocess.run(
+            [require_claude(), "-p", "/usage", "--no-session-persistence"],
+            env=clean_env(config_dir),
+            cwd=str(config_dir),        # no project's settings or hooks
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError, AuthError):
+        return None
+    return proc.stdout or ""
+
+
 def _set(profile: Profile, attr: str, value, adopt: bool) -> None:
     if value and (adopt or getattr(profile, attr) is None):
         setattr(profile, attr, value)

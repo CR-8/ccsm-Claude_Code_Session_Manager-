@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -124,7 +125,13 @@ if os.name == "nt":
 
     _NT_ARROWS = {"H": "up", "P": "down", "K": "left", "M": "right"}
 
-    def read_key() -> str:
+    def read_key(timeout: float | None = None) -> str:
+        """One key; with a timeout, "" if none arrived in time."""
+        end = None if timeout is None else time.time() + timeout
+        while end is not None and not msvcrt.kbhit():
+            if time.time() >= end:
+                return ""
+            time.sleep(0.03)
         ch = msvcrt.getwch()
         if ch in ("\x00", "\xe0"):
             return _NT_ARROWS.get(msvcrt.getwch(), "")
@@ -140,11 +147,14 @@ else:
 
     _VT_ARROWS = {"[A": "up", "[B": "down", "[D": "left", "[C": "right"}
 
-    def read_key() -> str:
+    def read_key(timeout: float | None = None) -> str:
+        """One key; with a timeout, "" if none arrived in time."""
         fd = sys.stdin.fileno()
         saved = termios.tcgetattr(fd)
         try:
             tty.setraw(fd)
+            if timeout is not None and not select.select([fd], [], [], timeout)[0]:
+                return ""
             ch = sys.stdin.read(1)
             if ch == "\x1b":
                 if select.select([fd], [], [], 0.05)[0]:
@@ -179,7 +189,7 @@ KEYS = (
     ("A", "adopt", "keep who is signed in, no browser"),
     ("r", "reverify", "sign this profile in again"),
     ("u", "usage", "activity recorded in this runtime"),
-    ("R", "refresh", "re-check every stored credential"),
+    ("R", "refresh", "re-check every account and its limits"),
     ("d", "remove", "delete profile and its credential"),
     ("?", "help", "this screen"),
     ("q", "quit", "quit - esc works too"),
@@ -208,6 +218,35 @@ class App:
         self.msg = ""
         self.msg_kind = "dim"
         self.cautioned = False
+        self.fetching = False
+        self.fetched: dict = {}                # profile id -> windows, or why there are none
+        self.changed = threading.Event()       # set by the fetch thread: redraw
+
+    def fetch_limits(self) -> None:
+        """Ask Claude Code's /usage for every account, off the key loop - it takes seconds."""
+        if self.fetching or not self.store.profiles:
+            return
+        self.fetching = True
+
+        def work():
+            try:
+                self.fetched = usage.fetch_limits(self.store, self.creds, runtime_dir())
+            except Exception as exc:   # a failed fetch must never take the manager down
+                self.fetched = {p.id: str(exc) for p in self.store.profiles}
+            finally:
+                self.fetching = False
+                self.changed.set()
+
+        self.fetch_thread = threading.Thread(target=work, daemon=True)
+        self.fetch_thread.start()
+
+    def finish_fetch(self) -> None:
+        """Quitting mid-read could strand a token Claude Code just refreshed in a scratch
+        dir, and refresh tokens rotate - so wait for the read to put it back first."""
+        thread = getattr(self, "fetch_thread", None)
+        if thread is not None and thread.is_alive():
+            self.busy("finishing the limit read")
+            thread.join()
 
     # -- helpers
 
@@ -348,11 +387,19 @@ class App:
         windows, now = rec.get("windows", {}), time.time()
         for key, label in usage.WINDOWS:
             w = windows.get(key)
-            if w:
+            if w and w.get("resets_at"):
                 verb = "resets" if w["resets_at"] > now else "reset"
                 parts.append(f"{label} {verb} {usage.clock(w['resets_at'])}")
-        if windows:
+        why = self.fetched.get(p.id)
+        if self.fetching:
+            parts.append("reading limits" + ELL)
+        elif isinstance(why, str):
+            parts.append(f"limits: {why}" + (f", last read {ago(rec.get('seen'))}"
+                                             if windows else ""))
+        elif windows:
             parts.append(f"read {ago(rec.get('seen'))}")
+        else:
+            parts.append("no limit reading yet - R reads them")
         # Not p.org: a personal account's org is "<full email>'s Organization", which
         # would undo mask_email for anyone who can see the screen.
         parts += [p.auth_method, f"id {p.id}"]
@@ -523,7 +570,8 @@ class App:
     def do_switch(self, silent: bool = False) -> None:
         """Publish this profile's stored credential into the live runtime."""
         profile = self.current
-        self.busy(f"switching to {profile.name}")
+        self.busy(f"switching to {profile.name}"
+                  + (" - waiting for the limit read to finish" if self.fetching else ""))
         caution = None
         if not silent and not self.cautioned:
             # `ccsm switch` prints this before every switch; once a session is enough here.
@@ -559,6 +607,7 @@ class App:
         if not ok:
             self.note(why, "warn")
             return
+        self.finish_fetch()   # launching replaces this process on POSIX
         leave_screen()
         print(enc(f"{C['dim']}ccsm → {active.name} ({mask_email(active.email)}) "
                   f"{MID} {runtime_dir()}{C['reset']}"))
@@ -574,7 +623,8 @@ class App:
             else:
                 auth.quick_refresh(profile, self.creds)
         self.store.save()
-        self.note("refreshed", "ok")
+        self.fetch_limits()
+        self.note("refreshed - reading limits in the background", "ok")
 
     def open_usage(self) -> None:
         self.metrics = usage.collect(runtime_dir())
@@ -639,12 +689,23 @@ class App:
             auth.quick_refresh(profile, self.creds)
         self.store.save()
         enter_screen()
+        self.fetch_limits()
         try:
+            redraw = True
             while True:
-                self.draw()
-                if self.handle(read_key()) is False:
+                if redraw:
+                    self.draw()
+                key = read_key(0.25)
+                if not key:   # idle: redraw only when the fetch thread has news
+                    redraw = self.changed.is_set()
+                    self.changed.clear()
+                    continue
+                redraw = True
+                if self.handle(key) is False:
+                    self.finish_fetch()
                     return 0
         except KeyboardInterrupt:
+            self.finish_fetch()
             return 130
         finally:
             leave_screen()

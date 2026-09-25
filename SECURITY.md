@@ -27,8 +27,21 @@ them in command-line arguments or environment variables.
 | `.claude.json` → `oauthAccount` only | reads and surgically replaces — the account identity |
 | `.claude.json.ccsm-backup` | writes once, before the first modification |
 | `<runtime>/.credentials.json.lock` | **reads only** — Claude Code's own refresh lock |
+| `<ccsm home>/enroll/<profile>/.credentials.json` | writes a stored credential for one `/usage` read, then deletes it — see below |
+| `<ccsm home>/limits.json` | writes — percentages and reset times per `accountUuid`, no token material |
 
 `<ccsm home>` is `%APPDATA%\ccsm` (Windows) or `$XDG_CONFIG_HOME/ccsm` (Linux/WSL).
+
+**Reading limits.** When the manager opens, and on `R`, it runs `claude -p /usage` once per
+account. Claude Code, not ccsm, sends that account's credential to Anthropic, exactly as
+typing `/usage` in a session does. `/usage` is a local command and spends no quota.
+- **The live account** is read in the runtime itself.
+- **Every other account** is read in its own enrolment directory, with its stored
+  credential copied in for the duration.
+- **A refreshed token is kept.** If Claude Code refreshes the token there, the refreshed
+  token goes back to the store: matched by `accountUuid`, and only if its expiry is later.
+  Then the copy is deleted.
+- **No switch can overlap a read.** The whole read holds ccsm's switch lock.
 
 ## Threat model
 
@@ -50,6 +63,10 @@ What it does defend against:
   ccsm holds no copy of.
 - **Mis-attributing a credential.** Harvest requires a positive `accountUuid` match. A
   missing identity is never treated as agreement.
+- **Stranding a rotated token.** OAuth refresh tokens rotate, so a token Claude Code
+  refreshes during a `/usage` read goes back to the store before its copy is deleted. The
+  older token an enrolment `/login` left behind never replaces a newer stored one.
+  Quitting the manager waits for a read in progress.
 - **World-readable windows.** Credential writes go through a temp file opened at `0600`,
   then `os.replace`.
 
