@@ -11,13 +11,14 @@ import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 from . import __version__, auth, usage
-from .credentials import clean_env, open_store
+from .credentials import bundle_credentials, clean_env, open_store
 from .launcher import launch, preflight
 from .profiles import (MAX_PROFILES, OK, REVERIFY, ProfileStore, ccsm_home, mask_email,
                        runtime_dir)
-from .switcher import SwitchError, capture, switch
+from .switcher import SwitchError, adopt, capture, owner_of, switch
 
 # --- warm neutral palette (256-colour, deliberately quiet) -------------------
 
@@ -92,6 +93,13 @@ def ago(ts: float | None) -> str:
     return f"{int(d / 86400)}d ago"
 
 
+def tilde(path) -> str:
+    try:
+        return str(Path("~") / Path(path).relative_to(Path.home()))
+    except ValueError:
+        return str(path)
+
+
 def plan_label(plan: str | None) -> str:
     return (plan or DASH).replace("_", " ").title()
 
@@ -150,7 +158,8 @@ def leave_screen() -> None:
 # --- app --------------------------------------------------------------------
 
 KEYBAR = (
-    ("↑↓", "move"), ("⏎", "switch"), ("l", "run"), ("a", "add"), ("r", "reverify"),
+    ("↑↓", "move"), ("⏎", "switch"), ("l", "run"), ("a", "add"), ("A", "adopt"),
+    ("r", "reverify"),
     ("d", "remove"), ("u", "usage"), ("R", "refresh"), ("q", "quit"),
 )
 USAGE_KEYBAR = (("↑↓", "metric"), ("R", "refresh"), ("esc", "back"), ("q", "quit"))
@@ -184,7 +193,8 @@ class App:
     def draw(self, prompt: tuple[str, str] | None = None) -> None:
         w = self.width()
         hairline = RULE * (w - 4)
-        lines = ["", self._header(w), f"  {C['rule']}{hairline}{C['reset']}", ""]
+        lines = ["", self._header(w), f"  {C['rule']}{hairline}{C['reset']}",
+                 f"  {self._live()}", ""]
         lines += self._usage_body() if self.view == "usage" else self._list_body()
         lines.append("")
         if prompt:
@@ -205,6 +215,22 @@ class App:
         return (f"  {C['bold']}{C['coral']}ccsm{C['reset']}  "
                 f"{C['dim']}claude code session manager{gap}{right}{C['reset']}")
 
+    def _live(self) -> str:
+        """Who the runtime is signed in as right now - read from disk, not profiles.json,
+        because a /login run there changes the account without ccsm knowing."""
+        ok, why = self.creds.available()
+        if not ok:
+            return f"{C['warn']}{why}{C['reset']}"
+        live = self.creds.read_live(runtime_dir())
+        where = f"{C['dim']}runtime {tilde(runtime_dir())} {MID} {C['reset']}"
+        if bundle_credentials(live) is None:
+            return f"{where}{C['dim']}signed out{C['reset']}"
+        owner = owner_of(self.creds, self.store, live)
+        if owner is None:
+            return (f"{where}{C['warn']}signed in as an account ccsm does not hold "
+                    f"- A adopts it{C['reset']}")
+        return f"{where}{C['dim']}live {C['reset']}{C['sel']}{owner.name}{C['reset']}"
+
     def _keybar(self, bar) -> str:
         parts = [f"{C['warm']}{k}{C['reset']} {C['dim']}{label}{C['reset']}" for k, label in bar]
         return "  " + "   ".join(parts)
@@ -213,8 +239,10 @@ class App:
         if not self.store.profiles:
             return [
                 f"  {C['dim']}No profiles yet.{C['reset']}",
-                f"  {C['warm']}a{C['reset']} {C['dim']}adds one and signs it in "
-                f"(up to {MAX_PROFILES}).{C['reset']}",
+                f"  {C['warm']}A{C['reset']} {C['dim']}keeps the account already signed in "
+                f"here - no browser.{C['reset']}",
+                f"  {C['warm']}a{C['reset']} {C['dim']}adds another account with a browser "
+                f"sign-in (up to {MAX_PROFILES}).{C['reset']}",
             ]
         head = (f"      {C['dim']}{pad('PROFILE', 14)}{pad('IDENTITY', 24)}"
                 f"{pad('PLAN', 9)}{pad('AUTH', 10)}VERIFIED{C['reset']}")
@@ -314,6 +342,20 @@ class App:
         self.sel = self.store.profiles.index(profile)
         self._sign_in(profile, f"Signing in '{profile.name}'. Browser OAuth signs in one "
                                "account at a time - finish with the account you want here.")
+
+    def do_adopt(self) -> None:
+        name = self.prompt("adopt the signed-in account as")
+        if not name:
+            self.note("")
+            return
+        self.busy(f"adopting {name}")
+        try:
+            profile = adopt(self.store, self.creds, runtime_dir(), name)
+        except (SwitchError, auth.AuthError, ValueError, OSError) as exc:
+            self.note(str(exc), "warn")
+            return
+        self.sel = self.store.profiles.index(profile)
+        self.note(f"{profile.name} stored as {mask_email(profile.email)}", "ok")
 
     def do_reverify(self) -> None:
         profile = self.current
@@ -440,6 +482,8 @@ class App:
             self.do_refresh_all()
         elif key == "a":
             self.do_add()
+        elif key == "A":
+            self.do_adopt()
         elif not n:
             pass
         elif key == "up":

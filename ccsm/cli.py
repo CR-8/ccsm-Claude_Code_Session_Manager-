@@ -7,11 +7,10 @@ import shutil
 import sys
 
 from . import __version__, auth, tui
-from .credentials import (bundle_account, bundle_credentials, config_json_path,
-                          open_store)
+from .credentials import open_store
 from .launcher import launch, preflight
 from .profiles import ProfileStore, ccsm_home, mask_email, runtime_dir
-from .switcher import SwitchError, owner_of, switch
+from .switcher import SwitchError, adopt, switch
 
 USAGE = f"""ccsm {__version__} - Claude Code Session Manager
 
@@ -68,38 +67,12 @@ def cmd_adopt(args: list[str]) -> int:
     if not args:
         print("ccsm: adopt needs a name for the profile", file=sys.stderr)
         return 2
-    profiles, store = ProfileStore(), open_store(ccsm_home())
-    ok, why = store.available()
-    if not ok:
-        print(f"ccsm: {why}", file=sys.stderr)
-        return 1
     runtime = runtime_dir()
-    bundle = store.read_live(runtime)
-    if bundle_credentials(bundle) is None:
-        print(f"ccsm: no Claude credential in {runtime} to adopt", file=sys.stderr)
+    try:
+        profile = adopt(ProfileStore(), open_store(ccsm_home()), runtime, args[0])
+    except (SwitchError, ValueError, OSError) as exc:
+        print(f"ccsm: {exc}", file=sys.stderr)
         return 1
-    if bundle_account(bundle) is None:
-        print(f"ccsm: {runtime} has a credential but no account identity in "
-              f"{config_json_path(runtime)} - sign in there first", file=sys.stderr)
-        return 1
-    already = owner_of(store, profiles, bundle)
-    if already is not None and already.id != args[0]:
-        print(f"ccsm: that account is already enrolled as '{already.id}'", file=sys.stderr)
-        return 1
-    profile = profiles.get(args[0])
-    if profile is None:
-        try:
-            profile = profiles.add(args[0])
-        except (ValueError, OSError) as exc:
-            print(f"ccsm: {exc}", file=sys.stderr)
-            return 1
-    store.put(profile.id, bundle)
-    auth.refresh(profile, runtime)
-    # Only claim 'active' when nothing else is: adopting from an enrolment directory
-    # does not make that account the one live in the session's config dir.
-    if profiles.active is None:
-        profiles.set_active(profile.id)
-    profiles.save()
     print(tui.enc(f"ccsm: adopted the account in {runtime} as '{profile.id}' "
                   f"({mask_email(profile.email)})"))
     return 0

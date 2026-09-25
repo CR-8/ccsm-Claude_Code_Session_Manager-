@@ -22,7 +22,7 @@ os.environ["CCSM_FORCE_FILE_STORE"] = "1"      # exercise the file backend on an
 os.environ["CCSM_RUNTIME"] = str(Path(_TMP) / "runtime")
 os.environ.pop("CLAUDE_CONFIG_DIR", None)
 
-from ccsm import auth, usage  # noqa: E402
+from ccsm import auth, tui, usage  # noqa: E402
 from ccsm.credentials import (  # noqa: E402
     AUTH_ENV, DEFAULT_CONFIG_DIR, FileCredentialStore, KeychainCredentialStore,
     account_uuid, bundle_credentials, clean_env, config_json_path, expired,
@@ -33,7 +33,9 @@ from ccsm.profiles import (  # noqa: E402
     MAX_PROFILES, OK, REVERIFY, UNKNOWN, Profile, ProfileStore, ccsm_home, mask_email,
     runtime_dir, slugify,
 )
-from ccsm.switcher import SwitchError, ccsm_lock, harvest, owner_of, switch  # noqa: E402
+from ccsm.switcher import (  # noqa: E402
+    SwitchError, adopt, ccsm_lock, harvest, owner_of, switch,
+)
 
 UUID_A = "aaaaaaaa-0000-4000-8000-00000000000a"
 UUID_B = "bbbbbbbb-0000-4000-8000-00000000000b"
@@ -377,6 +379,42 @@ def test_switch_waits_for_claude_code_refresh_lock():
     finally:
         lock.unlink(missing_ok=True)
     assert token_of(creds.read_live(rt)) == "A1"
+
+
+def test_adopt_enrols_the_live_account_and_refuses_what_it_would_destroy():
+    profiles, creds, a, b, rt = fresh("adopt")
+    real_status = auth.status
+    auth.status = lambda *_a, **_k: {"loggedIn": True, "email": "c@z.com"}
+    try:
+        creds.write_live(rt, bundle("C1", "cccccccc-0000-4000-8000-0000000000cc", "c@z.com"))
+        assert "A adopts it" in tui.App()._live(), "an unenrolled live account went unflagged"
+
+        for name, why in (("company", "different account"), ("PERSONAL", "different account")):
+            try:
+                adopt(profiles, creds, rt, name)
+                raise AssertionError(f"adopted over {name}, which holds another account")
+            except SwitchError as exc:
+                assert why in str(exc)
+        assert token_of(creds.get("company")) == "B1", "an enrolled credential was overwritten"
+
+        work = adopt(profiles, creds, rt, "Work")
+        assert token_of(creds.get("work")) == "C1" and work.email == "c@z.com"
+        assert profiles.active == "personal", "adopting must not claim an existing active"
+        assert "Work" in tui.App()._live(), "the live line does not name the adopted profile"
+        assert adopt(profiles, creds, rt, "WORK") is work, "re-adopting the same account failed"
+        try:
+            adopt(profiles, creds, rt, "other")
+            raise AssertionError("enrolled one account under two names")
+        except SwitchError as exc:
+            assert "already enrolled as 'work'" in str(exc)
+    finally:
+        auth.status = real_status
+
+    try:
+        adopt(profiles, creds, rt / "empty", "nobody")
+        raise AssertionError("adopted from a runtime with no credential")
+    except SwitchError as exc:
+        assert "no Claude credential" in str(exc)
 
 
 def test_owner_of_identifies_by_account_uuid():

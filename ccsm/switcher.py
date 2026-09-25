@@ -27,7 +27,7 @@ from pathlib import Path
 
 from . import auth
 from .credentials import (account_email, account_uuid, bundle_account, bundle_credentials,
-                          harden, read_account, same_account)
+                          config_json_path, harden, read_account, same_account)
 from .profiles import OK, REVERIFY, Profile, ProfileStore
 
 LOCK_NAME = "switch.lock"
@@ -210,3 +210,35 @@ def capture(store, profile: Profile, source_dir) -> bool:
         return False
     store.put(profile.id, bundle)
     return True
+
+
+def adopt(profiles: ProfileStore, store, runtime, name: str) -> Profile:
+    """Enrol the account already signed in at `runtime`, without a browser round trip."""
+    ok, why = store.available()
+    if not ok:
+        raise SwitchError(why)
+    bundle = store.read_live(runtime)
+    if bundle_credentials(bundle) is None:
+        raise SwitchError(f"no Claude credential in {runtime} to adopt")
+    if bundle_account(bundle) is None:
+        raise SwitchError(f"{runtime} has a credential but no account identity in "
+                          f"{config_json_path(runtime)} - sign in there first")
+    profile = profiles.get(name)
+    already = owner_of(store, profiles, bundle)
+    if already is not None and already is not profile:
+        raise SwitchError(f"that account is already enrolled as '{already.id}'")
+    if profile is None:
+        profile = profiles.add(name)
+    elif already is None and account_uuid(store.get(profile.id)):
+        # The name holds a different, identified account. Storing over it would destroy
+        # that account's only credential. A legacy entry with no identity may be re-enrolled.
+        raise SwitchError(f"'{profile.id}' already holds a different account - "
+                          f"remove it first or pick another name")
+    store.put(profile.id, bundle)
+    auth.refresh(profile, runtime)
+    # Only claim 'active' when nothing else is: adopting from an enrolment directory
+    # does not make that account the one live in the session's config dir.
+    if profiles.active is None:
+        profiles.set_active(profile.id)
+    profiles.save()
+    return profile
