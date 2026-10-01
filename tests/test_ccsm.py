@@ -417,6 +417,49 @@ def test_adopt_enrols_the_live_account_and_refuses_what_it_would_destroy():
         assert "no Claude credential" in str(exc)
 
 
+def test_tui_never_draws_past_the_terminal_width():
+    """A line as wide as the terminal wraps, and every redraw after it lands one row off."""
+    import contextlib
+    import io
+    import re
+
+    profiles, creds, a, b, rt = fresh("fit")
+    b.name = "A Profile Name Longer Than Its Column"
+    b.org = "b@y.com's Organization"     # how Claude names a personal org
+    profiles.save()
+    switch(profiles, b, creds, rt, check_identity=False)
+    saved = os.environ.get("COLUMNS")
+    try:
+        for cols in (44, 60, 80, 120):
+            os.environ["COLUMNS"] = str(cols)
+            app = tui.App()
+            assert app.sel == 1, "the cursor should start on the active profile"
+            for view in ("list", "usage", "help"):
+                if view == "usage":
+                    app.open_usage()
+                app.view = view
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    app.draw()
+                text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", out.getvalue())
+                widest = max(len(ln) for ln in text.split("\r\n"))
+                assert widest < cols, f"{view} drew {widest} columns into {cols}"
+                assert "b@y.com" not in text, "the detail line unmasked an identity"
+
+        app.view = "list"
+        app.handle("k")
+        assert app.sel == 0
+        app.handle("2")
+        assert app.sel == 1 and app.store.active == "company", "a digit must never switch"
+        app.handle("?")
+        assert app.view == "help" and app.handle("x") and app.view == "list"
+    finally:
+        if saved is None:
+            os.environ.pop("COLUMNS", None)
+        else:
+            os.environ["COLUMNS"] = saved
+
+
 def test_owner_of_identifies_by_account_uuid():
     profiles, creds, a, b, rt = fresh("owner")
     assert owner_of(creds, profiles, bundle("X", UUID_B, "b@y.com")).id == "company"

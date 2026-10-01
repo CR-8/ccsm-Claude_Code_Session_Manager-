@@ -7,6 +7,7 @@ same code runs on macOS, Linux/WSL and Windows terminals.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -77,8 +78,20 @@ def enc(s: str) -> str:
 
 
 def pad(s: str | None, n: int) -> str:
+    """s in a column n wide, always leaving a space before the next column."""
     s = s or ""
-    return (s[: n - 1] + ELL) if len(s) > n else s.ljust(n)
+    return (s[: n - 2] + ELL + " ") if len(s) >= n else s.ljust(n)
+
+
+_ANSI = re.compile(r"(\x1b\[[0-9;?]*[A-Za-z])")
+
+
+def clip(line: str, n: int) -> str:
+    """Cut a line to n visible columns, keeping its colour codes so the reset survives."""
+    parts = _ANSI.split(line)
+    for i in range(0, len(parts), 2):
+        parts[i], n = parts[i][: max(n, 0)], n - len(parts[i])
+    return "".join(parts)
 
 
 def ago(ts: float | None) -> str:
@@ -157,19 +170,36 @@ def leave_screen() -> None:
 
 # --- app --------------------------------------------------------------------
 
-KEYBAR = (
-    ("↑↓", "move"), ("⏎", "switch"), ("l", "run"), ("a", "add"), ("A", "adopt"),
-    ("r", "reverify"),
-    ("d", "remove"), ("u", "usage"), ("R", "refresh"), ("q", "quit"),
+# Every list-view key, most used first. The keybar shows as many as fit; `?` shows all.
+KEYS = (
+    ("↑↓", "move", f"move - j k and 1-{MAX_PROFILES} too"),
+    ("⏎", "switch", "live from the next request"),
+    ("l", "run", "start Claude Code as the live one"),
+    ("a", "add", "add an account - browser sign-in"),
+    ("A", "adopt", "keep who is signed in, no browser"),
+    ("r", "reverify", "sign this profile in again"),
+    ("u", "usage", "activity recorded in this runtime"),
+    ("R", "refresh", "re-check every stored credential"),
+    ("d", "remove", "delete profile and its credential"),
+    ("?", "help", "this screen"),
+    ("q", "quit", "quit - esc works too"),
 )
+EMPTY_KEYS = ("a", "A", "?", "q")
 USAGE_KEYBAR = (("↑↓", "metric"), ("R", "refresh"), ("esc", "back"), ("q", "quit"))
+HELP_KEYBAR = (("any key", "back"), ("q", "quit"))
+
+# Table columns left to right, each width including the gap after it. When the terminal
+# is narrow, VERIFIED goes first, then IDENTITY, then PLAN; the detail line picks up slack.
+COLUMNS = (("PROFILE", 16), ("IDENTITY", 26), ("PLAN", 9), ("AUTH", 10), ("VERIFIED", 9))
+ROW_INDENT = 7   # "  ▸ ●  "
 
 
 class App:
     def __init__(self) -> None:
         self.store = ProfileStore()
         self.creds = open_store(ccsm_home())
-        self.sel = 0
+        self.sel = next((i for i, p in enumerate(self.store.profiles)
+                         if p.id == self.store.active), 0)
         self.metric = 0
         self.view = "list"
         self.metrics: list = []
@@ -186,7 +216,7 @@ class App:
         self.msg, self.msg_kind = text, kind
 
     def width(self) -> int:
-        return max(58, min(shutil.get_terminal_size((84, 24)).columns, 100))
+        return max(40, min(shutil.get_terminal_size((84, 24)).columns, 100))
 
     # -- rendering
 
@@ -195,7 +225,9 @@ class App:
         hairline = RULE * (w - 4)
         lines = ["", self._header(w), f"  {C['rule']}{hairline}{C['reset']}",
                  f"  {self._live()}", ""]
-        lines += self._usage_body() if self.view == "usage" else self._list_body()
+        body = {"usage": self._usage_body, "help": self._help_body}.get(self.view,
+                                                                         self._list_body)
+        lines += body()
         lines.append("")
         if prompt:
             label, buf = prompt
@@ -203,9 +235,12 @@ class App:
         else:
             msg = self.msg if len(self.msg) <= w - 4 else self.msg[: w - 5] + ELL
             lines.append(f"  {C[self.msg_kind]}{msg}{C['reset']}" if msg else "")
-        lines += ["", self._keybar(USAGE_KEYBAR if self.view == "usage" else KEYBAR)]
+        bar = {"usage": USAGE_KEYBAR, "help": HELP_KEYBAR}.get(self.view) or (
+            KEYS if self.store.profiles else [k for k in KEYS if k[0] in EMPTY_KEYS])
+        lines += ["", self._keybar(bar, w)]
+        # A line as wide as the terminal wraps and shifts every line below it.
         sys.stdout.write(
-            "\x1b[H" + "".join(enc(ln) + "\x1b[K\r\n" for ln in lines) + "\x1b[J"
+            "\x1b[H" + "".join(clip(enc(ln), w - 1) + "\x1b[K\r\n" for ln in lines) + "\x1b[J"
         )
         sys.stdout.flush()
 
@@ -222,42 +257,85 @@ class App:
         if not ok:
             return f"{C['warn']}{why}{C['reset']}"
         live = self.creds.read_live(runtime_dir())
-        where = f"{C['dim']}runtime {tilde(runtime_dir())} {MID} {C['reset']}"
+        # Status first, path last: a narrow terminal cuts the path, not the answer.
+        where = f"{C['dim']} {MID} runtime {tilde(runtime_dir())}{C['reset']}"
         if bundle_credentials(live) is None:
-            return f"{where}{C['dim']}signed out{C['reset']}"
+            return f"{C['dim']}signed out{C['reset']}{where}"
         owner = owner_of(self.creds, self.store, live)
         if owner is None:
-            return (f"{where}{C['warn']}signed in as an account ccsm does not hold "
-                    f"- A adopts it{C['reset']}")
-        return f"{where}{C['dim']}live {C['reset']}{C['sel']}{owner.name}{C['reset']}"
+            return (f"{C['warn']}signed in as an account ccsm does not hold "
+                    f"- A adopts it{C['reset']}{where}")
+        return f"{C['dim']}live {C['reset']}{C['sel']}{owner.name}{C['reset']}{where}"
 
-    def _keybar(self, bar) -> str:
-        parts = [f"{C['warm']}{k}{C['reset']} {C['dim']}{label}{C['reset']}" for k, label in bar]
+    def _keybar(self, bar, w: int) -> str:
+        """The keys that fit, dropping from the middle so the last two stay visible."""
+        bar = [(k, label) for k, label, *_ in bar]
+        keep, tail = bar[:-2], bar[-2:]
+        room = w - 1 - sum(len(enc(k)) + len(label) + 4 for k, label in tail)
+        shown = []
+        for k, label in keep:
+            room -= len(enc(k)) + len(label) + 4
+            if room < 0:
+                break
+            shown.append((k, label))
+        parts = [f"{C['warm']}{k}{C['reset']} {C['dim']}{label}{C['reset']}"
+                 for k, label in shown + tail]
         return "  " + "   ".join(parts)
+
+    def _columns(self) -> list:
+        cols = list(COLUMNS)
+        for name in ("VERIFIED", "IDENTITY", "PLAN"):
+            if ROW_INDENT + sum(n for _, n in cols) <= self.width() - 2:
+                break
+            cols = [c for c in cols if c[0] != name]
+        return cols
 
     def _list_body(self) -> list[str]:
         if not self.store.profiles:
-            return [
-                f"  {C['dim']}No profiles yet.{C['reset']}",
-                f"  {C['warm']}A{C['reset']} {C['dim']}keeps the account already signed in "
-                f"here - no browser.{C['reset']}",
-                f"  {C['warm']}a{C['reset']} {C['dim']}adds another account with a browser "
-                f"sign-in (up to {MAX_PROFILES}).{C['reset']}",
-            ]
-        head = (f"      {C['dim']}{pad('PROFILE', 14)}{pad('IDENTITY', 24)}"
-                f"{pad('PLAN', 9)}{pad('AUTH', 10)}VERIFIED{C['reset']}")
-        return [head, ""] + [self._row(i, p) for i, p in enumerate(self.store.profiles)]
+            desc = {k: d for k, _, d in KEYS}
+            return [f"  {C['dim']}No profiles yet.{C['reset']}", ""] + [
+                f"  {C['warm']}{k}{C['reset']}  {C['dim']}{desc[k]}{C['reset']}"
+                for k in ("A", "a")]
+        cols = self._columns()
+        head = " " * ROW_INDENT + "".join(pad(name, n) for name, n in cols)
+        rows = [self._row(i, p, cols) for i, p in enumerate(self.store.profiles)]
+        return [f"{C['dim']}{head}{C['reset']}", ""] + rows + ["", self._detail(cols)]
 
-    def _row(self, i: int, p) -> str:
+    def _row(self, i: int, p, cols) -> str:
         cursor = f"{C['coral']}{ARROW}{C['reset']}" if i == self.sel else " "
         active = f"{C['coral']}{DOT}{C['reset']}" if p.id == self.store.active else " "
-        name_c = C["sel"] if i == self.sel else C["text"]
-        state_c = {OK: C["ok"], REVERIFY: C["warn"]}.get(p.auth_state, C["dim"])
-        return (f"  {cursor} {active}  {name_c}{pad(p.name, 14)}{C['reset']}"
-                f"{C['dim']}{pad(mask_email(p.email), 24)}{C['reset']}"
-                f"{C['warm']}{pad(plan_label(p.plan), 9)}{C['reset']}"
-                f"{state_c}{pad(p.auth_state, 10)}{C['reset']}"
-                f"{C['dim']}{ago(p.last_verified)}{C['reset']}")
+        cells = {
+            "PROFILE": (C["sel"] if i == self.sel else C["text"], p.name),
+            "IDENTITY": (C["dim"], mask_email(p.email)),
+            "PLAN": (C["warm"], plan_label(p.plan)),
+            "AUTH": ({OK: C["ok"], REVERIFY: C["warn"]}.get(p.auth_state, C["dim"]),
+                     p.auth_state),
+            "VERIFIED": (C["dim"], ago(p.last_verified)),
+        }
+        row = f"  {cursor} {active}  "
+        for name, n in cols:
+            colour, text = cells[name]
+            row += f"{colour}{pad(text, n)}{C['reset']}"
+        return row
+
+    def _detail(self, cols) -> str:
+        """What the table has no column for, for the selected profile only."""
+        p = self.current
+        # Not p.org: a personal account's org is "<full email>'s Organization", which
+        # would undo mask_email for anyone who can see the screen.
+        parts = [p.auth_method, f"id {p.id}"]
+        if "IDENTITY" not in dict(cols):
+            parts.insert(0, mask_email(p.email))
+        text = f" {MID} ".join(x for x in parts if x)
+        return " " * ROW_INDENT + f"{C['dim']}{text}{C['reset']}"
+
+    def _help_body(self) -> list[str]:
+        lines = []
+        for k, _, desc in KEYS:
+            for j, chunk in enumerate(self._wrap(desc, self.width() - 11)):
+                key = pad(k, 6) if j == 0 else " " * 6
+                lines.append(f"  {C['warm']}{key}{C['reset']}{C['text']}{chunk}{C['reset']}")
+        return lines
 
     def _usage_body(self) -> list[str]:
         p = self.current
@@ -464,12 +542,15 @@ class App:
     # -- loop
 
     def handle(self, key: str) -> bool:
+        if self.view == "help":
+            self.view = "list"
+            return key != "q"
         if self.view == "usage":
             if key in ("q", "esc", "u"):
                 self.view = "list"
-            elif key == "up":
+            elif key in ("up", "k"):
                 self.metric = (self.metric - 1) % len(self.metrics)
-            elif key == "down":
+            elif key in ("down", "j"):
                 self.metric = (self.metric + 1) % len(self.metrics)
             elif key == "R":
                 self.metrics = usage.collect(runtime_dir())
@@ -484,12 +565,16 @@ class App:
             self.do_add()
         elif key == "A":
             self.do_adopt()
+        elif key == "?":
+            self.view = "help"
         elif not n:
             pass
-        elif key == "up":
+        elif key in ("up", "k"):
             self.sel = (self.sel - 1) % n
-        elif key == "down":
+        elif key in ("down", "j"):
             self.sel = (self.sel + 1) % n
+        elif key in tuple("123456789"[:n]):
+            self.sel = int(key) - 1   # moves only - a switch stays a deliberate ⏎
         elif key == "enter":
             self.do_switch()
         elif key == "l":
