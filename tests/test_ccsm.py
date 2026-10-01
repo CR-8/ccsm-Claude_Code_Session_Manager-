@@ -22,7 +22,7 @@ os.environ["CCSM_FORCE_FILE_STORE"] = "1"      # exercise the file backend on an
 os.environ["CCSM_RUNTIME"] = str(Path(_TMP) / "runtime")
 os.environ.pop("CLAUDE_CONFIG_DIR", None)
 
-from ccsm import auth, tui, usage  # noqa: E402
+from ccsm import auth, cli, tui, usage  # noqa: E402
 from ccsm.credentials import (  # noqa: E402
     AUTH_ENV, DEFAULT_CONFIG_DIR, FileCredentialStore, KeychainCredentialStore,
     account_uuid, bundle_credentials, clean_env, config_json_path, expired,
@@ -415,6 +415,203 @@ def test_adopt_enrols_the_live_account_and_refuses_what_it_would_destroy():
         raise AssertionError("adopted from a runtime with no credential")
     except SwitchError as exc:
         assert "no Claude credential" in str(exc)
+
+
+def test_tui_never_draws_past_the_terminal_width():
+    """A line as wide as the terminal wraps, and every redraw after it lands one row off."""
+    import contextlib
+    import io
+    import re
+
+    profiles, creds, a, b, rt = fresh("fit")
+    b.name = "A Profile Name Longer Than Its Column"
+    b.org = "b@y.com's Organization"     # how Claude names a personal org
+    profiles.save()
+    switch(profiles, b, creds, rt, check_identity=False)
+    saved = os.environ.get("COLUMNS")
+    try:
+        for cols in (44, 60, 80, 120):
+            os.environ["COLUMNS"] = str(cols)
+            app = tui.App()
+            assert app.sel == 1, "the cursor should start on the active profile"
+            for view in ("list", "usage", "help"):
+                if view == "usage":
+                    app.open_usage()
+                app.view = view
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    app.draw()
+                text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", out.getvalue())
+                widest = max(len(ln) for ln in text.split("\r\n"))
+                assert widest < cols, f"{view} drew {widest} columns into {cols}"
+                assert "b@y.com" not in text, "the detail line unmasked an identity"
+
+        app.view = "list"
+        app.handle("k")
+        assert app.sel == 0
+        app.handle("2")
+        assert app.sel == 1 and app.store.active == "company", "a digit must never switch"
+        app.handle("?")
+        assert app.view == "help" and app.handle("x") and app.view == "list"
+    finally:
+        if saved is None:
+            os.environ.pop("COLUMNS", None)
+        else:
+            os.environ["COLUMNS"] = saved
+
+
+def test_tui_messages_say_what_to_do_and_whose_usage_it_is():
+    import contextlib
+    import io
+    import re
+
+    profiles, creds, a, b, rt = fresh("labels")
+    real = auth.status, auth.version_warning, tui.read_key, os.environ.get("COLUMNS")
+    calls = []
+    auth.status = lambda *_a, **_k: {"loggedIn": True}
+    auth.version_warning = lambda: calls.append(1) or "UNVERIFIED-VERSION"
+    tui.read_key = lambda: "n"
+    os.environ["COLUMNS"] = "60"
+
+    def screen(action):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            action()
+        text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", out.getvalue())
+        return " ".join(ln.strip() for ln in text.split("\r\n"))
+
+    try:
+        app = tui.App()
+        app.sel = 1
+        app.do_switch()
+        assert "UNVERIFIED-VERSION" in app.msg, "the TUI switch hid the version caution"
+        app.sel = 0
+        app.do_switch()
+        assert "UNVERIFIED-VERSION" not in app.msg and len(calls) == 1, "cautioned twice"
+
+        shown = screen(app.do_remove)
+        assert "adopt it again" in shown, "removing the live account gave no warning"
+        assert app.store.get("personal") is not None, "declining must keep the profile"
+
+        app.open_usage()
+        assert "shared by every profile" in screen(app.draw), "usage attributed to a profile"
+        app.view = "list"
+
+        creds.write_live(rt, bundle("X", "cccccccc-0000-4000-8000-0000000000cc", "c@z.com"))
+        app.sel = 1
+        app.do_switch()
+        assert "to keep it before switching" in screen(app.draw), "the error's advice was cut"
+    finally:
+        auth.status, auth.version_warning, tui.read_key = real[:3]
+        if real[3] is None:
+            os.environ.pop("COLUMNS", None)
+        else:
+            os.environ["COLUMNS"] = real[3]
+
+
+def test_statusline_files_limits_under_the_live_account_only():
+    """The 5-hour and weekly limits are Claude Code's own reading, never ccsm's estimate,
+    and a reading is only ever filed under the account it belongs to."""
+    import contextlib
+    import io
+    import re
+
+    profiles, creds, a, b, rt = fresh("limits")
+    now = time.time()
+    reading = {"rate_limits": {"five_hour": {"used_percentage": 42, "resets_at": now + 3600},
+                               "seven_day": {"used_percentage": 90, "resets_at": now - 60}}}
+    real_stdin, saved = sys.stdin, os.environ.get("COLUMNS")
+    try:
+        sys.stdin = io.TextIOWrapper(io.BytesIO(json.dumps(reading).encode("utf-8")))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            assert cli.main(["statusline"]) == 0
+        assert "5h 58% left" in out.getvalue() and "week reset" in out.getvalue()
+        assert "reset left" not in out.getvalue()
+        assert usage.load_limits()[UUID_A]["windows"]["five_hour"]["used_percentage"] == 42
+
+        switch(profiles, b, creds, rt, check_identity=False)
+        assert usage.record_limits(reading, rt) is None, "A's last reading was filed under B"
+        assert UUID_B not in usage.load_limits()
+        assert usage.record_limits({"no": "rate_limits"}, rt) is None
+        assert {m.key: m for m in usage.collect(rt)}["session"].value == usage.UNAVAILABLE
+
+        os.environ["COLUMNS"] = "120"
+        app = tui.App()
+        app.sel = 0
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            app.draw()
+        text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", out.getvalue())
+        personal = next(ln for ln in text.split("\r\n") if "personal" in ln.lower())
+        assert "58%" in personal and "reset" in personal, "A's limits missing from its row"
+        assert "5h resets" in text and "week reset " in text, "reset times missing"
+    finally:
+        sys.stdin = real_stdin
+        if saved is None:
+            os.environ.pop("COLUMNS", None)
+        else:
+            os.environ["COLUMNS"] = saved
+
+
+USAGE_TEXT = """You are currently using your subscription to power your Claude Code usage
+
+Current session: 43% used · resets Sep 25, 9:10pm (Europe/Lisbon)
+Current week (all models): 21% used · resets Sep 29, 8:30am (Europe/Lisbon)
+
+What's contributing to your limits usage?
+"""
+
+
+def test_fetch_reads_every_account_and_keeps_tokens_it_refreshes():
+    """/usage runs per account; a scratch run may rotate the refresh token, and a spent
+    token left in the store would send the user back to a browser."""
+    now = time.mktime((2026, 9, 25, 18, 0, 0, 0, 0, -1))
+    w = usage.parse_usage(USAGE_TEXT, now)
+    assert w["five_hour"] == {"used_percentage": 43.0,
+                              "resets_at": time.mktime((2026, 9, 25, 21, 10, 0, 0, 0, -1))}
+    assert w["seven_day"]["resets_at"] == time.mktime((2026, 9, 29, 8, 30, 0, 0, 0, -1))
+    assert usage.parse_usage("Current session: 5% used", now)["five_hour"]["resets_at"] is None
+    assert usage.parse_usage("I see a path but no request.", now) == {}
+
+    profiles, creds, a, b, rt = fresh("fetch")
+    # What an old /login left in B's enrolment dir: an earlier, spent token.
+    creds.write_live(b.enroll_dir, make_bundle(cred("B0", refresh_days=1),
+                                               account(UUID_B, "b@y.com")))
+    seen, real = [], auth.usage_text
+
+    def fake(config_dir, timeout=25):
+        seen.append(Path(config_dir))
+        if Path(config_dir) == b.enroll_dir:
+            assert token_of(creds.read_live(config_dir)) == "B1", \
+                "an old enrolment token replaced the stored one"
+            creds.write_live(config_dir, make_bundle(cred("B2", refresh_days=31),
+                                                     account(UUID_B, "b@y.com")))  # refreshed
+            return USAGE_TEXT.replace("43%", "10%")
+        return USAGE_TEXT
+    auth.usage_text = fake
+    try:
+        out = usage.fetch_limits(profiles, creds, rt)
+    finally:
+        auth.usage_text = real
+    assert sorted(map(str, seen)) == sorted([str(rt), str(b.enroll_dir)]), \
+        "the live account must be read in the runtime, the rest in their own dirs"
+    assert token_of(creds.get("company")) == "B2", "a refreshed token was not kept"
+    assert not (b.enroll_dir / ".credentials.json").exists(), "a token copy was left behind"
+    assert token_of(creds.read_live(rt)) == "A1", "the live runtime was touched"
+    limits = usage.load_limits()
+    assert limits[UUID_A]["windows"]["five_hour"]["used_percentage"] == 43
+    assert limits[UUID_B]["windows"]["five_hour"]["used_percentage"] == 10
+    assert set(out) == {"personal", "company"}
+
+    # The statusline passed A's precise numbers before the fetch rounded them. After a
+    # switch it keeps passing them for a while; they must not land under B.
+    a_statusline = {"five_hour": {"used_percentage": 43.4, "resets_at": 2000000000}}
+    usage._file(UUID_A, a_statusline, "statusline")
+    usage._file(UUID_A, w, "usage")
+    switch(profiles, b, creds, rt, check_identity=False)
+    usage.record_limits({"rate_limits": a_statusline}, rt)
+    assert usage.load_limits()[UUID_B]["windows"]["five_hour"]["used_percentage"] == 10
 
 
 def test_owner_of_identifies_by_account_uuid():

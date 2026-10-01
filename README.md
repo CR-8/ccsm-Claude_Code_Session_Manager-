@@ -20,16 +20,19 @@ Same process. Same conversation. No `/login`, no `/logout`, no restart.
 </div>
 
 ```
-  ccsm  claude code session manager                              v0.1.0
-  ─────────────────────────────────────────────────────────────────────
+  ccsm  claude code session manager                                                         v0.1.0
+  ────────────────────────────────────────────────────────────────────────────────────────────────
+  live Personal · runtime ~/.claude
 
-      PROFILE       IDENTITY                PLAN     AUTH      VERIFIED
+       PROFILE         IDENTITY                PLAN     AUTH      5H LEFT  WEEK LEFT  VERIFIED
 
-  ▸ ●  Personal      m•••••e@gmail.com       Max      OK        2m ago
-       Company       m•••••y@acme.com        Max      OK        1h ago
-       Friend        Unavailable             —        UNKNOWN   never
+  ▸ ●  Personal        m•••••e@gmail.com       Max      OK        58%      69%        2m ago
+       Company         m•••••y@acme.com        Max      OK        reset    12%        1h ago
+       Friend          Unavailable             —        UNKNOWN   —        —          never
 
-  ↑↓ move   ⏎ switch   l run   a add   r reverify   d remove   q quit
+       5h resets 21:15 · week resets Tue 19:05 · read 2m ago · claude.ai · id personal
+
+  ↑↓ move   ⏎ switch   l run   a add   A adopt   r reverify   u usage   ? help   q quit
 ```
 
 Sign in to each account **once**. After that `A → B → A → C` costs no browser. Measured
@@ -124,14 +127,29 @@ ccsm switch work
 | `ccsm adopt <name>` | Enrol the account already signed in, no browser |
 | `ccsm where` | Claude Code version, target config dir, store location |
 | `ccsm run [args]` | Start Claude Code as the active profile; args pass through |
+| `ccsm statusline [-- cmd]` | A `statusLine` command that records the live account's limits; `-- cmd` keeps yours |
 | `ccsm uninstall [--yes]` | Delete all ccsm data including stored credentials |
 | `ccsm --version` / `--help` | |
 
 **Inside Claude Code:** `/ccsm`, `/ccsm list`, `/ccsm add <name>`, `/ccsm switch <name>`,
 `/ccsm where`.
 
-**Manager keys:** `↑↓` move · `⏎` switch · `l` run · `a` add · `r` reverify · `d` remove ·
-`u` usage · `R` refresh · `q` quit
+**Manager keys:** `↑↓` / `j` `k` move · `⏎` switch · `l` run · `a` add · `A` adopt ·
+`r` reverify · `d` remove · `u` usage · `R` refresh · `?` help · `q` quit. Digits move to a
+row and never switch. On a narrow terminal the keybar shows what fits; `?` lists every key.
+
+**Limits.** The manager shows how much of each account's 5-hour and weekly limit is left, and
+when each window resets. The numbers are Claude Code's own: ccsm never estimates them.
+- **On open, and on `R`:** ccsm runs `claude -p /usage` for every account in the
+  background. That takes a few seconds and spends no quota.
+- **Between opens:** the live account's numbers stay current if you set ccsm as your
+  statusline. Put your existing command after `--`:
+
+```json
+"statusLine": { "type": "command", "command": "ccsm statusline -- <your existing command>" }
+```
+
+ccsm shows limits and nothing more. It never switches for you when an account runs low.
 
 **Environment:** `CCSM_HOME` (data dir) · `CCSM_RUNTIME` (force the target config dir) ·
 `CCSM_CLAUDE_BIN` (Claude Code executable) · `NO_COLOR`
@@ -218,7 +236,7 @@ two real subscription accounts.
 | `switcher.py` | The nine-step switch, locking, harvest, verification, rollback |
 | `auth.py` | `claude auth` wrappers, state classification, version guard |
 | `launcher.py` | Preflight and launching into the runtime |
-| `usage.py` | Supported metrics only, `Unavailable` otherwise |
+| `usage.py` | Claude Code's own stats and limits (`/usage`, statusline), `Unavailable` otherwise |
 | `tui.py` | Raw ANSI, keyboard, warm palette |
 
 Standard library only. No runtime dependencies.
@@ -238,6 +256,10 @@ Standard library only. No runtime dependencies.
   `ccsm adopt` only captures the account already signed in.
 - **The runtime is shared across profiles**, which is what makes the conversation survive.
   Session history and local stats are therefore not per-account.
+- **Limits depend on `/usage` staying a local command.** It is in print mode today
+  (verified on 2.1.220). If a later Claude Code sent it to the model instead, each read
+  would cost one small request per account, and the columns would show that no limits
+  were reported rather than a wrong number.
 - **No rotation, ever.** Switching is a key the user presses. ccsm will not react to a rate
   limit or schedule anything.
 
